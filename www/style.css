@@ -1,0 +1,31 @@
+
+:root {
+  --card-header-color: lightsteelblue;
+}
+
+#page-header {
+  background: lightsteelblue;
+  border: 1px solid steelblue;
+  border-radius: 5px;
+  font-weight: bold;
+}
+
+.content-box {
+  min-height: 300px;
+  background: lightsteelblue;
+}
+
+.flex-row {
+  display: flex;
+  flex-direction: column;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.test {
+  border: 1px solid grey;
+}
+
+.leaflet-control-attribution {
+  display: none;
+}
