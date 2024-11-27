@@ -2,7 +2,8 @@
 
 sidebarUI <- function() {
   div(
-    uiOutput("sites_ui"),
+    materialSwitch("multi_site", "Multi site mode"),
+    uiOutput("site_ui"),
     uiOutput("date_ui"),
     uiOutput("action_ui")
   )
@@ -39,7 +40,7 @@ ui <- dashboardPage(
     ),
     fluidRow(
       box(
-        title = "Sidebar",
+        title = "Sites",
         width = 2,
         solidHeader = T,
         collapsible = T,
@@ -53,13 +54,42 @@ ui <- dashboardPage(
         status = "primary",
         mapUI()
       ),
-      tabBox(
-        title = NULL,
+      box(
+        title = "Weather data",
         width = 5,
-        tabPanel("Plot", uiOutput("plots")),
-        tabPanel("Table", uiOutput("table"))
+        status = "primary",
+        uiOutput("data_ui")
       )
     )
   )
 )
+
+# ui <- page_fillable(
+#   title = "IBM Weather Data Portal",
+#   # theme = shinytheme("flatly"),
+#   tags$head(
+#     tags$meta(charset = "UTF-8"),
+#     tags$meta(name = "description", content = "A tool for downloading hourly weather data for any location in the continental United States"),
+#     tags$meta(name = "keywords", content = "uw, wisconsin, weather, tool"),
+#     # tags$link(rel = "shortcut icon", href = "favicon.ico"),
+#     tags$link(rel = "stylesheet", type = "text/css", href = "style.css"),
+#     tags$script(src = "script.js"),
+#     # includeHTML("www/google-analytics.html"),
+#     useShinyjs()
+#   ),
+#   padding = 0,
+#   h4("Weather portal"),
+#   layout_sidebar(
+#     sidebar = sidebarUI(),
+#     column(6, card(mapUI())),
+#     column(6,
+#       tabsetPanel(
+#         tabPanel("Plot", uiOutput("plots")),
+#         tabPanel("Table", uiOutput("table"))
+#       )
+#     )
+#
+#
+#   )
+# )
 

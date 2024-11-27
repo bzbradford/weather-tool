@@ -1,75 +1,123 @@
 
 server <- function(input, output, session) {
 
-  sites_template <- tibble(name = character(), lat = numeric(), lng = numeric())
+  # try to enforce site attributes
+  create_site <- function(loc) {
+    sites <- rv$sites
+    loc$id <- ifelse(nrow(sites) > 0, max(sites$id) + 1, 1)
+    if (is.null(loc$group)) loc$group = "temp"
+
+    # make sure it has all the attributes
+    stopifnot(all(names(sites_template) %in% names(loc)))
+    loc <- loc[names(loc) %in% names(sites_template)]
+    loc$lat <- round(loc$lat, 4)
+    loc$lng <- round(loc$lng, 4)
+    req(validate_loc(loc))
+    loc
+  }
+
+  save_temp_site <- function() {
+    site <- rv$temp_site
+    site$group = "sites"
+    site$icon = "download"
+    rv$sites <- bind_rows(
+      rv$sites,
+      as_tibble(site)
+    ) %>%
+      distinct(name, lat, lng, .keep_all = T) %>%
+      mutate(id = row_number())
+
+    rv$temp_site <- NULL
+  }
 
   rv <- reactiveValues(
-    sites = NULL,
-    site_located = NULL,
-    site_clicked = NULL,
-    site_searched = NULL,
-    show_upload = FALSE
+    weather = NULL,
+    temp_site = NULL, # list
+    sites = sites_template, # df
+    selected_site = 1,
+
+    show_upload = FALSE,
+    upload_msg = NULL
   )
 
-  temp_sites <- reactive({
-    sites_template %>%
-      bind_rows(as_tibble(rv$site_located)) %>%
-      bind_rows(as_tibble(rv$site_clicked)) %>%
-      bind_rows(as_tibble(rv$site_searched))
+  observe(print(rv$temp_site))
+
+  sites_df <- reactive({
+    if (input$multi_site)
+      bind_rows(sites_template, rv$sites, as_tibble(rv$temp_site))
+    else
+      bind_rows(sites_template, as_tibble(rv$temp_site))
   })
 
-  saved_sites <- reactive({
-    sites_template %>%
-      bind_rows(as_tibble(rv$sites))
+  sites_sf <- reactive({
+    sites <- sites_df()
+    req(nrow(sites) > 0)
+    sites %>%
+      select(id, name, lat, lng) %>%
+      st_as_sf(coords = c("lng", "lat"), crs = 4326, remove = F)
   })
+
+  observe(print(sites_sf()))
 
 
 
   # Sidebar -----------------------------------------------------------------
 
-  output$sites_ui <- renderUI({
-    tagList(
-      h4("Temporary sites"),
-      uiOutput("temp_sites_ui"),
-      hr(),
-      h4("Site list"),
-      uiOutput("saved_sites_ui"),
+  ## site_ui ----
+  output$site_ui <- renderUI({
+    if (input$multi_site)
+      uiOutput("multi_site_ui")
+    else
+      uiOutput("single_site_ui")
+  })
+
+  ## single_site_ui ----
+
+  output$single_site_ui <- renderUI({
+    div(style = "overflow:auto;", tableOutput("sites_tbl"))
+  })
+
+  ## multi_site_ui ----
+  output$multi_site_ui <- renderUI({
+    div(
+      p(em("Load or queue up multiple sites. A clicked or searched location must be clicked again to save it to the list.")),
+      tags$label("Temporary site:"),
+      div(style = "overflow:auto;", tableOutput("temp_tbl")),
+      tags$label("Saved sites:"),
+      div(style = "overflow:auto;", tableOutput("sites_tbl")),
       p(
-        actionButton("load_example", "Test sites"),
+        actionButton("load_example", "Test sites", class = "btn-small"),
         actionButton("upload_csv", "Upload csv"),
         actionButton("clear_sites", "Clear sites")
       ),
       uiOutput("file_upload_ui"),
-      hr(),
     )
   })
 
-  output$temp_sites_ui <- renderUI({
-    temp_sites <- temp_sites()
-    validate(need(nrow(temp_sites) > 0, "Click or search for a new location"))
-    df <- temp_sites %>%
-      mutate(action = "Save") %>%
+  ## temp_tbl ----
+  output$temp_tbl <- renderTable({
+    site <- req(rv$temp_site)
+    as_tibble(site) %>%
+      select(id, name, lat, lng) %>%
       clean_names("title")
-    tagList(
-      em("Weather data will not be fetched for these locations until they are saved to the list"),
-      renderTable(df)
-    )
-
   })
 
-  output$saved_sites_ui <- renderUI({
-    sites <- rv$sites
-    validate(need(sites, "No sites in list"))
-    df <- sites %>%
-      select(name, lat, lng) %>%
-      mutate(data = "0%") %>%
+  ## sites_tbl ----
+  output$sites_tbl <- renderTable({
+    sites <- sites_df()
+    if (input$multi_site) {
+      sites <- sites %>% filter(group != "temp")
+    }
+    validate(need(nrow(sites) > 0, "No sites in list. Click or search on the map or use the buttons below to upload a list of sites."))
+    sites %>%
+      select(id, name, lat, lng) %>%
+
+      # TODO: need to look at weather data for this value
+      # mutate(data = "0%") %>%
       clean_names("title")
-    tagList(
-      em("Set a start and end date below then click 'Fetch weather' to load weather data."),
-      renderTable(df)
-    )
   })
 
+  ## file_upload_ui ----
   output$file_upload_ui <- renderUI({
     req(rv$show_upload)
     div(
@@ -79,44 +127,45 @@ server <- function(input, output, session) {
         inputId = "sites_csv",
         label = NULL,
         accept = ".csv"
-      )
+      ),
+      { if (!is.null(rv$upload_msg)) div(class = "shiny-error", rv$upload_msg) }
     )
   })
 
+  # handle sites upload
   observe({
     upload <- req(input$sites_csv)
-    col_names <- c(
-      name = "name",
-      name = "location",
-      lat = "latitude",
-      lng = "longitude",
-      lng = "long"
-    )
-    try({
+    tryCatch({
       upload <- upload$datapath %>%
         read_csv(show_col_types = F) %>%
-        janitor::clean_names() %>%
-        select(any_of(col_names)) %>%
-        drop_na()
-      req(nrow(upload) > 0)
-      req(c("name", "lat", "lng") %in% names(upload))
+        load_sites()
       rv$sites <- upload
+      rv$selected_site <- 1
       rv$show_upload <- FALSE
+      rv$upload_msg <- NULL
+    }, error = function(e) {
+      rv$upload_msg = "Failed to load sites from csv, please try again."
     })
   })
 
-  observeEvent(input$load_example, {
-    rv$sites <- test_sites
-  })
+  observe({
+    rv$sites <- read_csv("example-sites.csv", show_col_types = F) %>%
+      load_sites()
+    fit_sites()
+  }) %>% bindEvent(input$load_example)
 
-  observeEvent(input$upload_csv, {
+  observe({
     rv$show_upload <- !rv$show_upload
-  })
+  }) %>% bindEvent(input$upload_csv)
 
-  observeEvent(input$clear_sites, {
-    rv$sites <- NULL
-  })
+  observe({
+    rv$temp_site <- NULL
+    rv$sites <- sites_template
+    rv$selected_site <- 1
+  }) %>% bindEvent(input$clear_sites)
 
+
+  ## date_ui ----
   output$date_ui <- renderUI({
     opts <- list(
       min = Sys.Date() - 30,
@@ -141,10 +190,34 @@ server <- function(input, output, session) {
   })
 
 
+  ## action_ui ----
   output$action_ui <- renderUI({
-    actionButton("get", "Fetch weather", width = "100%")
+    btn <- function(msg, ...) actionButton("get", msg, width = "100%", ...)
+    sites <- sites_df()
+    if (nrow(sites) == 0) {
+      btn("No sites selected", disabled = TRUE)
+    } else {
+      btn("Fetch weather")
+    }
   })
 
+  observe({
+    sites <- sites_df()
+    wx <- as_tibble(rv$weather)
+    opts <- list(
+      start_date = req(input$start_date),
+      end_date = req(input$end_date)
+    )
+    disable("get")
+    for (i in 1:nrow(sites)) {
+      site <- sites[i,]
+      print(site)
+      wx <- bind_rows(wx, get_ibm(site$lat, site$lng, opts$start_date, opts$end_date))
+    }
+    rv$weather <- wx %>%
+      distinct(requestedLatitude, requestedLongitude, validTimeUtc, .keep_all = T)
+    enable("get")
+  }) %>% bindEvent(input$get)
 
 
 
@@ -169,7 +242,8 @@ server <- function(input, output, session) {
   }
 
   fly_to <- function(loc) {
-    flyTo(leafletProxy("map"), loc$lng, loc$lat, 10)
+    leafletProxy("map") %>%
+      flyTo(loc$lng, loc$lat, max(10, isolate(input$map_zoom)))
   }
 
   add_marker <- function(loc, icon, layer_id) {
@@ -180,7 +254,7 @@ server <- function(input, output, session) {
         label = sprintf("%s: %.2f, %.2f", loc$name, loc$lat, loc$lng),
         layerId = layer_id,
         icon = makeAwesomeIcon(icon = icon),
-        options = pathOptions(pane = "sites")
+        options = markerOptions(pane = "sites")
       )
   }
 
@@ -232,45 +306,57 @@ server <- function(input, output, session) {
       )
   })
 
-  ## Render saved sites ----
-  # TODO: use different icons to indicate status of each site
+
+  ## Show site markers ----
   observe({
     map <- leafletProxy("map")
-    sites <- rv$sites
-    if (is.null(sites)) return(clearGroup(map, "sites"))
-    addAwesomeMarkers(
-      map,
-      data = sites,
-      lat = ~lat,
-      lng = ~lng,
-      label = ~sprintf("%s (%.2f, %.2f)", name, lat, lng),
-      group = "sites",
-      icon = makeAwesomeIcon(icon = "download"),
-      options = pathOptions(pane = "sites")
+
+    clearGroup(map, "sites")
+    clearGroup(map, "temp")
+
+    sites <- sites_df()
+    req(nrow(sites) > 0)
+    leafletProxy("map") %>%
+      addAwesomeMarkers(
+        data = sites,
+        lat = ~lat,
+        lng = ~lng,
+        label = ~sprintf("%s (%.2f, %.2f)", name, lat, lng),
+        layerId = ~id,
+        group = ~group,
+        icon = ~makeAwesomeIcon(icon = icon),
+        options = pathOptions(pane = "sites")
+      )
+  })
+
+
+  ## Show weather data grids ----
+  observe({
+    leafletProxy("map") %>%
+      addPolygons(
+        data = wx_grids(),
+        weight = 1,
+        label = "Weather grid",
+        layerId = ~grid_id,
+        options = pathOptions(pane = "grid")
+      )
+  })
+
+
+
+  ## Map button handler ----
+
+  fit_sites <- function() {
+    sites <- sites_df()
+    req(nrow(sites) > 0)
+    bounds <- list(
+      lat1 = min(sites$lat),
+      lat2 = max(sites$lat),
+      lng1 = min(sites$lng),
+      lng2 = max(sites$lng)
     )
-  })
-
-  ## Render temporary locations ----
-  observe({
-    loc <- req(rv$site_clicked)
-    add_marker(loc, "plus", "clicked")
-  })
-
-  observe({
-    loc <- req(rv$site_searched)
-    print(loc)
-    add_marker(loc, "search", "searched") %>%
-      flyTo(lat = loc$lat, lng = loc$lng, zoom = 10)
-  })
-
-  observe({
-    loc <- req(rv$site_located)
-    add_marker(loc, "home", "home") %>%
-      flyTo(lat = loc$lat, lng = loc$lng, zoom = 10)
-  })
-
-
-  # Map button handler ----
+    fit_bounds(bounds = bounds, options = list(padding = c(100, 100), maxZoom = 10))
+  }
 
   observeEvent(input$map_btn, {
     btn <- req(input$map_btn)
@@ -283,15 +369,7 @@ server <- function(input, output, session) {
         })
       ")
     } else if (btn == "zoom_sites") {
-      sites <- bind_rows(temp_sites(), saved_sites())
-      req(nrow(sites) > 0)
-      bounds <- list(
-        lat1 = min(sites$lat),
-        lat2 = max(sites$lat),
-        lng1 = min(sites$lng),
-        lng2 = max(sites$lng)
-      )
-      fit_bounds(bounds = bounds, options = list(padding = c(100, 100), maxZoom = 10))
+      fit_sites()
     } else if (btn == "zoom_extent") {
       fit_bounds(bounds = OPTS$map_bounds_us)
     }
@@ -346,39 +424,169 @@ server <- function(input, output, session) {
 
 
   ## Handle searched location from google or coordinates ----
+  # arrives with a name attribute already
   observe({
     loc <- req(input$searched_loc)
-
-    if (validate_loc(loc)) {
-      rv$site_searched <- loc
-      runjs("
-        document.getElementById('searchbox').value = '';
-        document.getElementById('coord_search').value = '';
-      ")
-    }
-  })
-
-  ## Handle location from click ----
-  observe({
-    loc <- req(input$map_click)
-    if (validate_loc(loc)) {
-      rv$site_clicked <- list(
-        name = "Clicked point",
-        lat = loc$lat,
-        lng = loc$lng
-      )
-    }
+    loc$icon <- "search"
+    rv$temp_site <- create_site(loc)
+    runjs("
+      document.getElementById('searchbox').value = '';
+      document.getElementById('coord_search').value = '';
+    ")
+    fly_to(loc)
   })
 
   ## Handle geolocation ----
   observe({
     loc <- req(input$user_loc)
-    if (validate_loc(loc)) {
-      rv$site_located <- list(
-        name = "Geolocated",
-        lat = loc$lat,
-        lng = loc$lng
-      )
-    }
+    loc$name <- "Geolocated"
+    loc$icon <- "home"
+    rv$temp_site <- create_site(loc)
+    fly_to(loc)
   })
+
+  ## Handle location from click ----
+  observe({
+    loc <- req(input$map_click)
+    message('click')
+    print(loc)
+    loc$name <- "Clicked point"
+    loc$icon <- "plus"
+    rv$temp_site <- create_site(loc)
+    fly_to(loc)
+  }) %>%
+    bindEvent(input$map_click$.nonce)
+
+  ## Handle marker click ----
+  observe({
+    marker <- req(input$map_marker_click)
+    message("marker")
+    print(marker)
+    if (input$multi_site & marker$group == "temp") {
+      site <- rv$temp_site
+      rv$temp_site <- NULL
+      site$group = "sites"
+      site$icon = "download"
+      rv$sites <-
+        bind_rows(rv$sites, as_tibble(site)) %>%
+        mutate(id = row_number())
+    }
+    rv$selected_site <- marker$id
+    fly_to(marker)
+  }) %>%
+    bindEvent(input$map_marker_click$.nonce)
+
+
+
+  # Weather data ---------------------------------------------------------------
+
+  wx_grids <- reactive({
+    build_grids(req(rv$weather)) %>%
+      rowwise() %>%
+      mutate(geometry = ll_to_grid(grid_lat, grid_lng)) %>%
+      ungroup() %>%
+      st_set_geometry("geometry")
+  })
+
+  sites_with_grid <- reactive({
+    sites_sf() %>%
+      st_join(wx_grids()) %>%
+      st_set_geometry(NULL)
+  })
+
+  wx_raw <- reactive({
+    req(rv$weather)
+  })
+
+  wx_raw_joined <- reactive({
+    sites_with_grid() %>%
+      left_join(wx_raw(), join_by(grid_id == gridpointId))
+  })
+
+  wx_hourly <- reactive({
+    build_hourly(req(rv$weather))
+  })
+
+  # hourly already has some duplicate grid attributes
+  wx_hourly_joined <- reactive({
+    sites_with_grid() %>%
+      select(id, name, lat, lng, grid_id) %>%
+      left_join(wx_hourly(), join_by(grid_id))
+  })
+
+  wx_daily <- reactive({
+    build_daily(wx_hourly())
+  })
+
+  wx_daily_joined <- reactive({
+    sites_with_grid() %>%
+      left_join(wx_daily(), join_by(grid_id))
+  })
+
+  output$data_ui <- renderUI({
+    validate(need(rv$weather, "No weather data downloaded yet."))
+    tabsetPanel(
+      tabPanel(
+        title = "Raw data",
+        p(em("Hourly weather data retrieved directly from the IBM weather service.")),
+        div(style = "overflow:auto;", DTOutput("data_raw"))
+      ),
+      tabPanel(
+        title = "Hourly",
+        p(em("Selected hourly weather parameters and additional generated data columns.")),
+        div(style = "overflow:auto;", DTOutput("data_hourly"))
+      ),
+      tabPanel(
+        title = "Daily",
+        p(em("Daily weather summary and moving averages, generated from hourly weather data.")),
+        div(style = "overflow:auto;", DTOutput("data_daily"))
+      ),
+      tabPanel(
+        title = "Sites/Grids",
+        p(em("Sites and corresponding data grids.")),
+        div(style = "overflow:auto;", DTOutput("data_grids"))
+      ),
+      tabPanel(
+        title = "Info",
+        p(em("Metadata and column definitions")),
+        gt_output("data_defs")
+      )
+    )
+  })
+
+  output$data_raw <- renderDT({
+    wx_raw_joined() %>%
+      clean_names("big_camel")
+  })
+
+  output$data_hourly <- renderDT({
+    wx_hourly_joined() %>%
+      clean_names("big_camel")
+  })
+
+  output$data_daily <- renderDT({
+    wx_daily_joined() %>%
+      clean_names("big_camel")
+  })
+
+  output$data_grids <- renderDT({
+    d <- OPTS$grid_dim
+    sites_with_grid() %>%
+      mutate(
+        lat_min = grid_lat - d,
+        lat_max = grid_lat + d,
+        lng_min = grid_lng - d,
+        lng_max = grid_lng + d
+      ) %>%
+      clean_names("big_camel")
+  })
+
+  output$data_defs <- render_gt({
+    ibm_cols %>%
+      clean_names("big_camel")
+  })
+
+
 }
+
+
