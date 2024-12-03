@@ -1,13 +1,27 @@
 
+/*
 :root {
   --card-header-color: lightsteelblue;
 }
+*/
 
 /* fix for DTOutput and server=TRUE */
 table {
   table-layout: fixed;
 }
 
+/* z-index must be less than datepicker */
+.main-header {
+  z-index: 500;
+}
+
+.site-tbl-container {
+  max-height: 400px;
+  overflow: auto;
+  margin-bottom: 10px;
+}
+
+/*
 #page-header {
   background: lightsteelblue;
   border: 1px solid steelblue;
@@ -27,15 +41,10 @@ table {
   gap: 20px;
 }
 
-.test {
-  border: 1px solid grey;
-}
-
-
-
 .tab-content {
   padding: 5px;
 }
+*/
 
 
 /*-- LEAFLET --*/
@@ -49,7 +58,9 @@ table {
   font-weight: bold;
 }
 
+/*
 .leaflet-control-layers-overlays::before {
   content: 'Layers:';
   font-weight: bold;
 }
+*/

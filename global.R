@@ -31,31 +31,6 @@ suppressPackageStartupMessages({
 })
 
 
-# new_site <- function(lat, lng, name, id, )
-
-# new_site <- setClass("site", slots = c(
-#   name = "character",
-#   lat = "numeric",
-#   lng = "numeric"))
-#
-# new_site(name = 2)
-
-sites_template <- tibble(
-  id = integer(),
-  name = character(),
-  lat = numeric(),
-  lng = numeric(),
-  group = character(),
-  icon = character()
-)
-
-ibm_cols <- read_csv("data/ibm_cols.csv", show_col_types = F)
-
-saved_weather <- if (file.exists("saved_weather.fst")) {
-  as_tibble(read_fst("saved_weather.fst"))
-}
-
-
 # Functions ---------------------------------------------------------------
 
 # ternary operator
@@ -68,6 +43,7 @@ saved_weather <- if (file.exists("saved_weather.fst")) {
 #   )
 # }
 
+#' message and print an object to the console for testing
 echo <- function(x) {
   message(deparse(substitute(x)))
   print(x)
@@ -76,7 +52,6 @@ echo <- function(x) {
 #' parse lat/lng coordinates from string
 #' @param str input string containing coordinates to parse in form "lat, lng"
 #' @return named list { lat: numeric, lng: numeric }
-
 parse_coords <- function(str) {
   str <- gsub("[ °NW]", "", str)
   parts <- str_split_1(str, ",")
@@ -93,7 +68,6 @@ parse_coords <- function(str) {
 #' returns TRUE if location is within service boundary
 #' @param loc list of type { lat: numeric, lng: numeric }
 #' @return boolean
-
 validate_loc <- function(loc, bounds = OPTS$map_bounds_us) {
   validate_ll(loc$lat, loc$lng)
 }
@@ -104,9 +78,9 @@ validate_ll <- function(lat, lng, bounds = OPTS$map_bounds_us) {
     between(lng, bounds$lng1, bounds$lng2)
 }
 
-# finds center and bounds of IBM grid cell
-# grid dimensions are 1/45.5 degrees
-# only provides an approximate grid location
+#' finds center and bounds of IBM grid cell
+#' grid dimensions are 1/45.5 degrees
+#' only provides an approximate grid location
 find_grid <- function(lat, lng) {
   d <- 22.75
   grd <- list(
@@ -139,7 +113,7 @@ ibm_chunks <- function(start_date, end_date, tz = "UTC") {
 # ibm_chunks("2024-1-1", Sys.Date())
 
 
-# fetch hourly weather data from IBM
+#' Fetch hourly weather data from IBM
 #' @param lat latitude of point
 #' @param lng longitude of point
 #' @param start_date date or date string
@@ -195,7 +169,20 @@ ll_to_grid <- function(lat, lon, d = OPTS$grid_dim) {
 
 build_grids <- function(hourly) {
   hourly %>%
-    distinct(grid_id, grid_lat, grid_lng) %>%
+    # distinct(grid_id, grid_lat, grid_lng) %>%
+    summarize(
+      date_min = min(date),
+      date_max = max(date),
+      days_expected = as.integer(max(date) - min(date)) + 1,
+      days_actual = n_distinct(date),
+      days_missing = days_expected - days_actual,
+      days_missing_pct = 100 * days_missing / days_actual,
+      hours_expected = days_expected * 24,
+      hours_actual = n(),
+      hours_missing = hours_expected - hours_actual,
+      hours_missing_pct = 100 * hours_missing / hours_actual,
+      .by = c(grid_id, grid_lat, grid_lng)
+    ) %>%
     rowwise() %>%
     mutate(geometry = ll_to_grid(grid_lat, grid_lng)) %>%
     ungroup() %>%
@@ -285,23 +272,25 @@ build_daily <- function(hourly) {
       ),
       precip_total = sum(precip),
       precip_max_rate = max(precip),
-      hours_rh_over_80 = sum(rh_over_80),
-      hours_rh_over_90 = sum(rh_over_90),
+      hours_rh80 = sum(rh_over_80),
+      hours_rh90 = sum(rh_over_90),
       hours_missing = 24 - n(),
       .by = c(grid_id, date)
     ) %>%
     filter(hours_missing < 6)
   by_night <- hourly %>%
     summarize(
-      hours_rh_over_80_night = sum(night & rh_over_80),
-      hours_rh_over_90_night = sum(night & rh_over_90),
+      hours_rh80_night = sum(night & rh_over_80),
+      hours_rh90_night = sum(night & rh_over_90),
       .by = c(grid_id, date_since_night)
     )
   by_date %>%
     left_join(by_night, join_by(grid_id, date == date_since_night)) %>%
     left_join(lat_lng, join_by(grid_id)) %>%
     relocate(grid_lat, grid_lng, .after = grid_id) %>%
-    add_moving_averages()
+    arrange(grid_id, date) %>%
+    add_moving_averages() %>%
+    add_disease_probs()
 }
 
 roll_mean <- function(vec, width) {
@@ -311,53 +300,105 @@ roll_mean <- function(vec, width) {
 add_moving_averages <- function(daily) {
   daily %>%
     mutate(
-      temperature_min_30day = roll_mean(temperature_min, 30),
-      temperature_mean_30day = roll_mean(temperature_mean, 30),
-      temperature_max_30day = roll_mean(temperature_max, 30),
-      temperature_min_21day = roll_mean(temperature_min, 21),
-      dew_point_min_21day = roll_mean(dew_point_min, 21),
-      rh_max_30day = roll_mean(rh_max, 30),
-      hours_rh_over_90_night_14day = roll_mean(hours_rh_over_90_night, 14),
-      hours_rh_over_80_30day = roll_mean(hours_rh_over_80, 30),
-      wind_speed_max_30day = roll_mean(wind_speed_max, 30)
+      temp_min_30ma = roll_mean(temperature_min, 30),
+      temp_mean_30ma = roll_mean(temperature_mean, 30),
+      temp_max_30ma = roll_mean(temperature_max, 30),
+      temp_min_21ma = roll_mean(temperature_min, 21),
+      dew_point_min_30ma = roll_mean(dew_point_min, 30),
+      rh_max_30ma = roll_mean(rh_max, 30),
+      hours_rh90_night_14ma = roll_mean(hours_rh90_night, 14),
+      hours_rh80_30ma = roll_mean(hours_rh80, 30),
+      wind_speed_max_30ma = roll_mean(wind_speed_max, 30)
+    )
+}
+
+add_disease_probs <- function(daily) {
+  daily %>%
+    mutate(
+      sporecaster_dry_prob = sporecaster_dry(temp_max_30ma, wind_speed_max_30ma),
+      sporecaster_irrig_30_prob = sporecaster_irrig(temp_max_30ma, rh_max_30ma, "30"),
+      sporecaster_irrig_15_prob = sporecaster_irrig(temp_max_30ma, rh_max_30ma, "15"),
+      frogeye_leaf_spot_prob = predict_fls(temp_max_30ma, hours_rh80_30ma),
+      gray_leaf_spot_prob = predict_gls(temp_min_21ma, dew_point_min_30ma),
+      tarspot_prob = predict_tarspot(temp_mean_30ma, rh_max_30ma, hours_rh90_night_14ma)
     )
 }
 
 
+# Disease models ----------------------------------------------------------
 
-# Data structures ---------------------------------------------------------
-
-cat_names <- function(df) {
-  message(deparse(substitute(df)))
-  cat("c(")
-  cat(paste(paste0("\"", names(df), "\""), collapse = ", "))
-  cat(")\n")
+# Logistic function to convert logit to probability
+logistic <- function(logit) {
+  exp(logit) / (1 + exp(logit))
 }
 
-get_specs <- function() {
-  ibm <- get_ibm(45, -89, today() - 1, today())
-  cat_names(ibm)
-
-  ibm_clean <- clean_ibm(ibm)
-  cat_names(ibm_clean)
-
-  hourly <- build_hourly(ibm_clean)
-  cat_names(hourly)
-
-  daily <- build_daily(hourly)
-  cat_names(daily)
+#' Apothecial sporecaster, dryland model
+#' @param max_temp_30ma 30-day moving average of daily maximum temperature, Celsius
+#' @param max_wind_30ma 30-day moving average of daily maximum wind speed, m/s
+sporecaster_dry <- function(temp_max_30ma, wind_max_30ma) {
+  mu <- -0.47 * temp_max_30ma - 1.01 * wind_max_30ma + 16.65
+  logistic(mu)
 }
 
-# get_specs()
+#' Apothecial sporecaster, irrigated model
+#' @param temp_max_30ma Maximum daily temperature, 30-day moving average, Celsius
+#' @param rh_max_30ma Maximum daily relative humidity, 30-day moving average, 0-100%
+#' @param spacing Row spacing, either "15" or "30", inches
+sporecaster_irrig <- function(temp_max_30ma, rh_max_30ma, spacing = c("15", "30")) {
+  spacing <- match.arg(spacing)
+  mu <- -2.38 * (spacing == "30") + 0.65 * temp_max_30ma + 0.38 * rh_max_30ma - 52.65
+  logistic(mu)
+}
+
+#' Frogeye leaf spot model
+#' use when growth stage within R1-R5 and no fungicide in last 14 days
+#' @param temp_max_30ma Maximum daily temperature, 30-day moving average, Celsius
+#' @param hours_rh80_30ma Daily hours RH > 80%, 30-day moving average, 0-24 hours
+predict_fls <- function(temp_max_30ma, hours_rh80_30ma) {
+  mu <- -5.92485 + 0.12208 * temp_max_30ma + 0.17326 * hours_rh80_30ma
+  logistic(mu)
+}
+
+#' Gray leaf spot model
+#' use when growth stage V10-R3 and no fungicide in last 14 days
+#' @param temp_min_21ma Minimum daily temperature, 21-day moving average, Celsius
+#' @param dew_point_min_30ma Minimum dew point temperature, 30-day moving average, Celsius
+predict_gls <- function(temp_min_21ma, dew_point_min_30ma) {
+  mu <- -2.9467 - 0.03729 * temp_min_21ma + 0.6534 * dew_point_min_30ma
+  logistic(mu)
+}
+
+#' Tarspot model
+#' @param temp_mean_30ma Mean daily temperature, 30-day moving average, Celsius
+#' @param rh_max_30ma Maximum daily relative humidity, 30-day moving average, 0-100%
+#' @param hours_rh90_night_14ma Nighttime hours RH > 90%, 14-day moving average, 0-24 hours
+predict_tarspot <- function(temp_mean_30ma, rh_max_30ma, hours_rh90_night_14ma) {
+  mu1 <- 32.06987 - 0.89471 * temp_mean_30ma - 0.14373 * rh_max_30ma
+  mu2 <- 20.35950 - 0.91093 * temp_mean_30ma - 0.29240 * hours_rh90_night_14ma
+  (logistic(mu1) + logistic(mu2)) / 2
+}
 
 
 
+# Load data ----
+
+sites_template <- tibble(
+  id = integer(),
+  name = character(),
+  lat = numeric(),
+  lng = numeric(),
+  temp = logical()
+)
+
+ibm_cols <- read_csv("data/ibm_cols.csv", show_col_types = F)
+
+saved_weather <- if (file.exists("saved_weather.fst")) {
+  as_tibble(read_fst("saved_weather.fst"))
+}
 
 
 
-
-
-# Settings ----------------------------------------------------------------
+# Settings ----
 
 OPTS <- lst(
   ibm_endpoint = "https://api.weather.com/v3/wx/hod/r1/direct",
@@ -397,10 +438,10 @@ OPTS <- lst(
     "OpenStreetMap" = providers$OpenStreetMap,
     "Grey Canvas" = providers$CartoDB.Positron
   ),
-  map_layers = list(
-    grid = "Data grid",
-    counties = "Counties/Regions"
-  ),
+  # map_layers = list(
+  #   grid = "Data grid",
+  #   counties = "Counties/Regions"
+  # ),
   map_click_zoom = 10,
 
   # allowable names for site loading
@@ -414,17 +455,44 @@ OPTS <- lst(
 
   # data types
   data_type_choices = list(
-    "Hourly" = "hourly",
-    "Daily" = "daily",
-    "Original" = "ibm"
+    "Hourly (select)" = "hourly",
+    "Hourly (all)" = "ibm",
+    "Daily" = "daily"
   ),
 
   # plotting
   plot_ignore_cols = c("grid_id", "grid_lat", "grid_lng", "datetime_utc", "time_zone", "datetime_local", "date", "yday", "year", "month", "month_name", "day", "hour", "night", "date_since_night"),
   plot_cols = list(
-    "ibm" = c("precip1hour", "precip6hour", "precip24hour", "precip2day", "precip3day", "precip7day", "precip_mtd", "precip_ytd", "pressure_change", "pressure_mean_sea_level", "relative_humidity", "snow1hour", "snow6hour", "snow24hour", "snow2day", "snow3day", "snow7day", "snow_mtd", "snow_season", "snow_ytd", "temperature", "temperature_change24hour", "temperature_max24hour", "temperature_min24hour", "temperature_dew_point", "temperature_feels_like", "uv_index", "visibility", "wind_direction", "wind_gust", "wind_speed"),
+    "ibm" = c("temperature", "temperature_change24hour", "temperature_max24hour", "temperature_min24hour", "temperature_dew_point", "temperature_feels_like", "precip1hour", "precip6hour", "precip24hour", "precip2day", "precip3day", "precip7day", "precip_mtd", "precip_ytd", "pressure_change", "pressure_mean_sea_level", "relative_humidity", "snow1hour", "snow6hour", "snow24hour", "snow2day", "snow3day", "snow7day", "snow_mtd", "snow_season", "snow_ytd","uv_index", "visibility", "wind_direction", "wind_gust", "wind_speed"),
     "hourly" = c("temperature", "dew_point", "rh", "precip", "wind_speed"),
-    "daily" = c("temperature_min", "temperature_mean", "temperature_max", "dew_point_min", "dew_point_mean", "dew_point_max", "rh_min", "rh_mean", "rh_max", "wind_speed_min", "wind_speed_mean", "wind_speed_max", "precip_total", "precip_max_rate", "hours_rh_over_80", "hours_rh_over_90", "hours_missing", "hours_rh_over_80_night", "hours_rh_over_90_night", "temperature_min_30day", "temperature_mean_30day", "temperature_max_30day", "temperature_min_21day", "dew_point_min_21day", "rh_max_30day", "hours_rh_over_90_night_14day", "hours_rh_over_80_30day", "wind_speed_max_30day")
+    "daily" = c("temperature_min","temperature_mean","temperature_max","dew_point_min","dew_point_mean","dew_point_max","rh_min","rh_mean","rh_max","wind_speed_min","wind_speed_mean","wind_speed_max","precip_total","precip_max_rate","hours_rh80","hours_rh90","hours_missing","hours_rh80_night","hours_rh90_night","temp_min_30ma","temp_mean_30ma","temp_max_30ma","temp_min_21ma","dew_point_min_30ma","rh_max_30ma","hours_rh90_night_14ma","hours_rh80_30ma","wind_speed_max_30ma","sporecaster_dry_prob","sporecaster_irrig_30_prob","sporecaster_irrig_15_prob","frogeye_leaf_spot_prob","gray_leaf_spot_prob","tarspot_prob")
   )
 )
+
+
+# Data structures ----
+
+cat_names <- function(df) {
+  message(deparse(substitute(df)))
+  cat("c(")
+  cat(paste(paste0("\"", names(df), "\""), collapse = ","))
+  cat(")\n")
+}
+
+get_specs <- function() {
+  ibm <- get_ibm(45, -89, today() - 1, today())
+  cat_names(ibm)
+
+  ibm_clean <- clean_ibm(ibm)
+  cat_names(ibm_clean)
+
+  hourly <- build_hourly(ibm_clean)
+  cat_names(hourly)
+
+  daily <- build_daily(hourly)
+  cat_names(daily)
+}
+
+# get_specs()
+
 
