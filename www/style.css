@@ -3,6 +3,11 @@
   --card-header-color: lightsteelblue;
 }
 
+/* fix for DTOutput and server=TRUE */
+table {
+  table-layout: fixed;
+}
+
 #page-header {
   background: lightsteelblue;
   border: 1px solid steelblue;
@@ -26,6 +31,25 @@
   border: 1px solid grey;
 }
 
+
+
+.tab-content {
+  padding: 5px;
+}
+
+
+/*-- LEAFLET --*/
+
 .leaflet-control-attribution {
   display: none;
+}
+
+.leaflet-control-layers-list::before {
+  content: 'Basemap:';
+  font-weight: bold;
+}
+
+.leaflet-control-layers-overlays::before {
+  content: 'Layers:';
+  font-weight: bold;
 }

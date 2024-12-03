@@ -1,6 +1,8 @@
 
 server <- function(input, output, session) {
 
+  # Functions ----
+
   # try to enforce site attributes
   create_site <- function(loc) {
     sites <- rv$sites
@@ -30,25 +32,57 @@ server <- function(input, output, session) {
     rv$temp_site <- NULL
   }
 
+
+  # Reactive values ----
+
+  ## rv ----
   rv <- reactiveValues(
-    weather = NULL,
+    weather = saved_weather,
+    weather_ready = FALSE,
     temp_site = NULL, # list
     sites = sites_template, # df
+    sites_ready = FALSE,
     selected_site = 1,
-
-    show_upload = FALSE,
-    upload_msg = NULL
+    show_upload = FALSE, # toggle upload ui
+    upload_msg = NULL # error message
   )
 
-  observe(print(rv$temp_site))
 
-  sites_df <- reactive({
-    if (input$multi_site)
-      bind_rows(sites_template, rv$sites, as_tibble(rv$temp_site))
-    else
-      bind_rows(sites_template, as_tibble(rv$temp_site))
+
+
+  # Reactive expressions ----
+
+  selected_dates <- reactive({
+    start <- req(input$start_date)
+    end <- req(input$end_date)
+    req(start <= end)
+
+    list(
+      start = start,
+      end = end
+    )
   })
 
+  ## sites_df ----
+  sites_df <- reactive({
+    sites <- rv$sites
+    temp_site <- rv$temp_site
+    if (input$multi_site) {
+      bind_rows(sites_template, sites, as_tibble(temp_site))
+    } else {
+      if (is.null(temp_site)) {
+        bind_rows(sites_template, sites) %>%
+          filter(id == rv$selected_site)
+      } else {
+        rv$sites <- sites_template
+        bind_rows(sites_template, as_tibble(temp_site))
+      }
+    }
+  })
+
+  # observe(echo(sites_df()))
+
+  ## sites_sf ----
   sites_sf <- reactive({
     sites <- sites_df()
     req(nrow(sites) > 0)
@@ -57,7 +91,76 @@ server <- function(input, output, session) {
       st_as_sf(coords = c("lng", "lat"), crs = 4326, remove = F)
   })
 
-  observe(print(sites_sf()))
+  # observe(echo(sites_sf()))
+
+  ## wx_hourly ----
+  wx_hourly <- reactive({
+    weather <- req(rv$weather)
+    req(nrow(weather) > 0)
+    build_hourly(weather)
+  })
+
+  ## wx_grids ----
+  wx_grids <- reactive({
+    wx_hourly() %>%
+      build_grids()
+  })
+
+  ## wx_grids_summary ----
+  wx_grids_summary <- reactive({
+    wx_hourly() %>%
+      build_grid_summary()
+  })
+
+  # observe(echo(wx_grids_summary()))
+
+  ## sites_with_grid ----
+  sites_with_grid <- reactive({
+    sites_sf() %>%
+      st_join(wx_grids()) %>%
+      st_set_geometry(NULL) %>%
+      drop_na(grid_id)
+  })
+
+  ## wx_hourly_joined ----
+  # hourly already has grid_lat & grid_lng
+  wx_hourly_joined <- reactive({
+    sites <- sites_with_grid()
+    wx <- wx_hourly() %>%
+      filter(grid_id %in% sites$grid_id) %>%
+      filter(between(date, selected_dates()$start, selected_dates()$end))
+    sites %>%
+      select(-c(grid_lat, grid_lng)) %>%
+      left_join(wx, join_by(grid_id), relationship = "many-to-many")
+  })
+
+  # observe(echo(wx_hourly_joined()))
+
+  # wx_hourly_summary <- reactive({
+  #   wx_hourly_joined() %>%
+  #     summarize(
+  #       across(date, c(min = min, max = max, n = n_distinct)),
+  #       across(
+  #         c(temp, dewpoint, rh, windspeed),
+  #         c(min = min, mean = mean, max = max)
+  #       )
+  #     ) %>%
+  #     pivot_longer(everything(), names_sep = "_", names_to = c("param", "stat"), values_transform = as.character)
+  # })
+  #
+  # observe(echo(wx_hourly_summary()))
+
+  ## wx_daily ----
+  wx_daily <- reactive({
+    wx_hourly() %>%
+      build_daily()
+  })
+
+  ## wx_daily_joined ----
+  wx_daily_joined <- reactive({
+    sites_with_grid() %>%
+      left_join(wx_daily(), join_by(grid_id))
+  })
 
 
 
@@ -96,7 +199,8 @@ server <- function(input, output, session) {
 
   ## temp_tbl ----
   output$temp_tbl <- renderTable({
-    site <- req(rv$temp_site)
+    site <- rv$temp_site
+    validate(need(site, "No site selected. Click or search on the map or use the buttons below to upload a list of sites."))
     as_tibble(site) %>%
       select(id, name, lat, lng) %>%
       clean_names("title")
@@ -108,7 +212,7 @@ server <- function(input, output, session) {
     if (input$multi_site) {
       sites <- sites %>% filter(group != "temp")
     }
-    validate(need(nrow(sites) > 0, "No sites in list. Click or search on the map or use the buttons below to upload a list of sites."))
+    validate(need(nrow(sites) > 0, "No sites in list. Click or search on the map to create a temporary site. Click again on the temporary site icon to save it."))
     sites %>%
       select(id, name, lat, lng) %>%
 
@@ -122,7 +226,7 @@ server <- function(input, output, session) {
     req(rv$show_upload)
     div(
       tags$label("Upload csv"), br(),
-      em("Must have columns 'name', 'lat', 'lng'"),
+      em("Upload a csv with three columns: name/location, lat/latitude, lng/long/longitude. Latitude and longitude must be in +/- decimal degrees."),
       fileInput(
         inputId = "sites_csv",
         label = NULL,
@@ -131,6 +235,21 @@ server <- function(input, output, session) {
       { if (!is.null(rv$upload_msg)) div(class = "shiny-error", rv$upload_msg) }
     )
   })
+
+  load_sites <- function(df) {
+    df <- df %>%
+      clean_names() %>%
+      select(any_of(OPTS$site_cols)) %>%
+      drop_na()
+    req(c("name", "lat", "lng") %in% names(df))
+    df <- df %>%
+      filter(validate_ll(lat, lng)) %>%
+      mutate(id = row_number(), .before = 1) %>%
+      mutate(group = "sites")
+    req(nrow(df) > 0)
+    rv$temp_site <- NULL
+    df
+  }
 
   # handle sites upload
   observe({
@@ -149,7 +268,7 @@ server <- function(input, output, session) {
   })
 
   observe({
-    rv$sites <- read_csv("example-sites.csv", show_col_types = F) %>%
+    rv$sites <- read_csv("data/example-sites.csv", show_col_types = F) %>%
       load_sites()
     fit_sites()
   }) %>% bindEvent(input$load_example)
@@ -167,27 +286,30 @@ server <- function(input, output, session) {
 
   ## date_ui ----
   output$date_ui <- renderUI({
-    opts <- list(
-      min = Sys.Date() - 30,
-      max = Sys.Date()
-    )
+    today <- Sys.Date()
+    dates <- as_date(c(
+      coalesce(input$start_date, OPTS$default_start_date),
+      coalesce(input$end_date, today)
+    ))
     div(
       dateInput(
         inputId = "start_date",
         label = "Start date:",
-        min = opts$min,
-        max = opts$max,
-        value = opts$min
+        min = OPTS$earliest_date,
+        max = today,
+        value = min(dates)
       ),
       dateInput(
         inputId = "end_date",
         label = "End date:",
-        min = opts$min,
-        max = opts$max,
-        value = opts$max
+        min = OPTS$earliest_date,
+        max = today,
+        value = max(dates)
       )
     )
   })
+
+
 
 
   ## action_ui ----
@@ -201,24 +323,48 @@ server <- function(input, output, session) {
     }
   })
 
+  # Get weather ----
   observe({
-    sites <- sites_df()
+    sites <- sites_sf()
     wx <- as_tibble(rv$weather)
-    opts <- list(
-      start_date = req(input$start_date),
-      end_date = req(input$end_date)
-    )
+    dates_need <- seq.Date(selected_dates()$start, selected_dates()$end, 1)
     disable("get")
+
+    # for each site download necessary weather data
     for (i in 1:nrow(sites)) {
       site <- sites[i,]
-      print(site)
-      wx <- bind_rows(wx, get_ibm(site$lat, site$lng, opts$start_date, opts$end_date))
-    }
-    rv$weather <- wx %>%
-      distinct(requestedLatitude, requestedLongitude, validTimeUtc, .keep_all = T)
-    enable("get")
-  }) %>% bindEvent(input$get)
 
+      # already have some weather?
+      if (nrow(wx) > 0) {
+        grids <- build_grids(wx)
+        grid_dates <- wx %>%
+          distinct(grid_id, date)
+        dates_have <- site %>%
+          st_join(grids) %>%
+          left_join(grid_dates, join_by(grid_id)) %>%
+          pull(date)
+        dates <- as_date(setdiff(dates_need, dates_have))
+      } else {
+        dates <- dates_need
+      }
+      # echo(dates)
+
+      # get weather if needed
+      if (length(dates) > 0) {
+        resp <- get_ibm(site$lat, site$lng, first(dates), last(dates))
+        new_wx <- clean_ibm(resp)
+        wx <- bind_rows(wx, new_wx) %>%
+          distinct(grid_id, datetime_utc, .keep_all = T)
+      }
+    }
+
+    rv$weather <- wx
+    write_fst(wx, "saved_weather.fst", compress = 90)
+    enable("get")
+  }) %>%
+    bindEvent(input$get)
+
+  # observe(echo(rv$weather))
 
 
   # Map ---------------------------------------------------------------------
@@ -314,17 +460,27 @@ server <- function(input, output, session) {
     clearGroup(map, "sites")
     clearGroup(map, "temp")
 
-    sites <- sites_df()
+    sites <- sites_df() %>%
+      replace_na(list(icon = "download")) %>%
+      mutate(
+        label = sprintf("<b>Site %s: %s</b><br>%.4f, %.4f", id, name, lat, lng) %>%
+          lapply(HTML),
+      )
     req(nrow(sites) > 0)
     leafletProxy("map") %>%
       addAwesomeMarkers(
         data = sites,
         lat = ~lat,
         lng = ~lng,
-        label = ~sprintf("%s (%.2f, %.2f)", name, lat, lng),
+        label = ~label,
         layerId = ~id,
         group = ~group,
-        icon = ~makeAwesomeIcon(icon = icon),
+        # icon = ~makeAwesomeIcon(icon = icon),
+        icon = ~makeAwesomeIcon(
+          library = "fa",
+          icon = if_else(group == "temp", "plus", as.character(id)),
+          iconColor =
+        ),
         options = pathOptions(pane = "sites")
       )
   })
@@ -332,12 +488,25 @@ server <- function(input, output, session) {
 
   ## Show weather data grids ----
   observe({
+    grids <- wx_grids() %>%
+      left_join(wx_grids_summary(), join_by(grid_id)) %>%
+      mutate(label = paste0(
+        "<b>Downloaded weather grid</b><br>",
+        "Earliest date: ", date_min, "<br>",
+        "Latest date: ", date_max, "<br>",
+        "Total days: ", days_expected, "<br>",
+        "Missing days: ", days_missing, sprintf(" (%.1f%%)", days_missing_pct), "<br>",
+        "Missing hours: ", hours_missing, sprintf(" (%.1f%%)", hours_missing_pct), "<br>",
+        "Center latitude: ", sprintf("%.2f", grid_lat), "<br>",
+        "Center longitude: ", sprintf("%.2f", grid_lng)
+      ) %>% lapply(HTML))
     leafletProxy("map") %>%
       addPolygons(
-        data = wx_grids(),
+        data = grids,
         weight = 1,
-        label = "Weather grid",
+        label = ~label,
         layerId = ~grid_id,
+        group = "grid",
         options = pathOptions(pane = "grid")
       )
   })
@@ -358,7 +527,7 @@ server <- function(input, output, session) {
     fit_bounds(bounds = bounds, options = list(padding = c(100, 100), maxZoom = 10))
   }
 
-  observeEvent(input$map_btn, {
+  observe({
     btn <- req(input$map_btn)
     map <- leafletProxy("map")
 
@@ -412,7 +581,7 @@ server <- function(input, output, session) {
     )
   })
 
-  observeEvent(input$coord_search_go, {
+  observe({
     str <- req(input$coord_search)
     try({
       coords <- parse_coords(str)
@@ -420,7 +589,8 @@ server <- function(input, output, session) {
       cmd <- paste0("Shiny.setInputValue('searched_loc', ", coord_hash, ", {priority: 'event'})")
       runjs(cmd)
     })
-  })
+  }) %>%
+    bindEvent(input$coord_search_go)
 
 
   ## Handle searched location from google or coordinates ----
@@ -443,13 +613,12 @@ server <- function(input, output, session) {
     loc$icon <- "home"
     rv$temp_site <- create_site(loc)
     fly_to(loc)
-  })
+  }) %>%
+    bindEvent(input$user_loc)
 
   ## Handle location from click ----
   observe({
     loc <- req(input$map_click)
-    message('click')
-    print(loc)
     loc$name <- "Clicked point"
     loc$icon <- "plus"
     rv$temp_site <- create_site(loc)
@@ -460,15 +629,14 @@ server <- function(input, output, session) {
   ## Handle marker click ----
   observe({
     marker <- req(input$map_marker_click)
-    message("marker")
-    print(marker)
     if (input$multi_site & marker$group == "temp") {
       site <- rv$temp_site
       rv$temp_site <- NULL
-      site$group = "sites"
-      site$icon = "download"
-      rv$sites <-
-        bind_rows(rv$sites, as_tibble(site)) %>%
+      site$group <- "sites"
+      site$icon <- "download"
+      rv$sites <- rv$sites %>%
+        bind_rows(as_tibble(site)) %>%
+        distinct(lat, lng, .keep_all = T) %>%
         mutate(id = row_number())
     }
     rv$selected_site <- marker$id
@@ -476,116 +644,199 @@ server <- function(input, output, session) {
   }) %>%
     bindEvent(input$map_marker_click$.nonce)
 
+  # observe(echo(rv$temp_site))
+  # observe(echo(rv$sites))
 
 
-  # Weather data ---------------------------------------------------------------
+  # Data display ---------------------------------------------------------------
 
-  wx_grids <- reactive({
-    build_grids(req(rv$weather)) %>%
-      rowwise() %>%
-      mutate(geometry = ll_to_grid(grid_lat, grid_lng)) %>%
-      ungroup() %>%
-      st_set_geometry("geometry")
-  })
+  ## rv$sites_ready ----
+  observe({ rv$sites_ready <- nrow(sites_df()) > 0 })
 
-  sites_with_grid <- reactive({
-    sites_sf() %>%
-      st_join(wx_grids()) %>%
-      st_set_geometry(NULL)
-  })
+  ## rv$weather_ready ----
+  observe({ rv$weather_ready <- nrow(wx_hourly_joined()) > 0 })
 
-  wx_raw <- reactive({
-    req(rv$weather)
-  })
+  site_attr <- {
+    cols <- c("id", "name", "lat", "lng")
+    names(cols) <- paste0("site_", cols)
+    cols
+  }
 
-  wx_raw_joined <- reactive({
-    sites_with_grid() %>%
-      left_join(wx_raw(), join_by(grid_id == gridpointId))
-  })
+  format_dt <- function(df) {
+    df %>%
+      rename(all_of(site_attr)) %>%
+      mutate(across(where(is.numeric), ~signif(.x))) %>%
+      mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character)) %>%
+      select(-grid_id) %>%
+      clean_names("big_camel")
+  }
 
-  wx_hourly <- reactive({
-    build_hourly(req(rv$weather))
-  })
-
-  # hourly already has some duplicate grid attributes
-  wx_hourly_joined <- reactive({
-    sites_with_grid() %>%
-      select(id, name, lat, lng, grid_id) %>%
-      left_join(wx_hourly(), join_by(grid_id))
-  })
-
-  wx_daily <- reactive({
-    build_daily(wx_hourly())
-  })
-
-  wx_daily_joined <- reactive({
-    sites_with_grid() %>%
-      left_join(wx_daily(), join_by(grid_id))
-  })
-
+  ## data_ui // renderUI ----
   output$data_ui <- renderUI({
-    validate(need(rv$weather, "No weather data downloaded yet."))
-    tabsetPanel(
-      tabPanel(
-        title = "Raw data",
-        p(em("Hourly weather data retrieved directly from the IBM weather service.")),
-        div(style = "overflow:auto;", DTOutput("data_raw"))
+    validate(need(rv$sites_ready, "No sites selected, click on the map or load sites in the sidebar."))
+    validate(need(rv$weather_ready, "No weather data downloaded yet for the selected sites."))
+
+    tagList(
+      p(em("Selected weather parameters and additional generated data columns. All units are metric. Temperature and dew point: degrees Celsius, relative humidity: %, wind speed: meters/second, precipitation: mm, snow: cm, visibility: km.")),
+      radioGroupButtons(
+        "data_type",
+        label = "Dataset",
+        choices = OPTS$data_type_choices
       ),
-      tabPanel(
-        title = "Hourly",
-        p(em("Selected hourly weather parameters and additional generated data columns.")),
-        div(style = "overflow:auto;", DTOutput("data_hourly"))
-      ),
-      tabPanel(
-        title = "Daily",
-        p(em("Daily weather summary and moving averages, generated from hourly weather data.")),
-        div(style = "overflow:auto;", DTOutput("data_daily"))
-      ),
-      tabPanel(
-        title = "Sites/Grids",
-        p(em("Sites and corresponding data grids.")),
-        div(style = "overflow:auto;", DTOutput("data_grids"))
-      ),
-      tabPanel(
-        title = "Info",
-        p(em("Metadata and column definitions")),
-        gt_output("data_defs")
-      )
+      uiOutput("dataset_ui")
     )
   })
 
-  output$data_raw <- renderDT({
-    wx_raw_joined() %>%
-      clean_names("big_camel")
+  ## selected_data // reactive ----
+  selected_data <- reactive({
+    sites <- sites_with_grid()
+    type <- req(input$data_type)
+    data <- if (type == "hourly") {
+      wx_hourly()
+    } else if (type == "daily") {
+      wx_daily()
+    } else {
+      rv$weather
+    }
+    data <- data %>%
+      filter(date > selected_dates()$start) %>%
+      filter(date < selected_dates()$end)
+    sites %>%
+      select(-c(grid_lat, grid_lng)) %>%
+      left_join(data, join_by(grid_id)) %>%
+      select(-grid_id) %>%
+      rename(all_of(site_attr)) %>%
+      mutate(across(where(is.numeric), ~signif(.x)))
   })
 
-  output$data_hourly <- renderDT({
-    wx_hourly_joined() %>%
-      clean_names("big_camel")
+  ## dataset_ui // renderUI ----
+  output$dataset_ui <- renderUI({
+    tagList(
+      h4("Data chart"),
+      uiOutput("plot_ui"),
+      h4("Data table"),
+      DTOutput("data_dt"),
+      downloadButton("download_data", "Download dataset")
+    )
   })
 
-  output$data_daily <- renderDT({
-    wx_daily_joined() %>%
-      clean_names("big_camel")
+  ## plot_ui // renderUI ----
+  output$plot_ui <- renderUI({
+
+    div(
+      uiOutput("plot_sites"),
+      uiOutput("plot_cols"),
+      plotlyOutput("data_plot")
+    )
   })
 
-  output$data_grids <- renderDT({
-    d <- OPTS$grid_dim
-    sites_with_grid() %>%
-      mutate(
-        lat_min = grid_lat - d,
-        lat_max = grid_lat + d,
-        lng_min = grid_lng - d,
-        lng_max = grid_lng + d
-      ) %>%
-      clean_names("big_camel")
+  output$plot_sites <- renderUI({
+    sites <- sites_df()
+    req(input$multi_site)
+    choices <- set_names(sites$id, sprintf("Site %s", sites$id))
+    checkboxGroupInput(
+      inputId = "plot_sites",
+      label = "Sites to display",
+      choices = choices,
+      selected = rv$selected_site,
+      inline = TRUE
+    )
   })
 
-  output$data_defs <- render_gt({
-    ibm_cols %>%
-      clean_names("big_camel")
+  output$plot_cols <- renderUI({
+    plot_cols <- OPTS$plot_cols[[req(input$data_type)]]
+    names(plot_cols) <- make_clean_names(plot_cols, "title")
+    checkboxGroupInput(
+      inputId = "plot_cols",
+      label = "Weather parameters",
+      choices = plot_cols,
+      selected = plot_cols[1],
+      inline = TRUE
+    )
   })
 
+  ## data_plot // renderPlotly ----
+  output$data_plot <- renderPlotly({
+    df <- selected_data()
+    opts <- list(
+      cols = req(input$plot_cols),
+      mode = ifelse(nrow(df) <= 250, "lines+markers", "lines"),
+      site_ids = unique(df$site_id),
+      selected_ids = input$plot_sites
+    )
+
+    req(nrow(df) > 0)
+    req(all(opts$cols %in% names(df)))
+    if (input$multi_site) req(opts$selected_ids)
+
+    if ("datetime_local" %in% names(df)) df$date <- df$datetime_local
+
+    plt <- plot_ly() %>%
+      layout(
+        hovermode = "x unified",
+        showlegend = TRUE,
+        legend = list(orientation = "h")
+      )
+
+    for (col in opts$cols) {
+      col_name <- make_clean_names(col, "title")
+      if (input$multi_site) {
+        for (id in opts$selected_ids) {
+          site_df <- df %>% filter(site_id == id)
+          plt <- add_trace(
+            plt,
+            x = site_df$date,
+            y = site_df[[col]],
+            name = sprintf("Site %s: %s", id, col_name),
+            type = "scatter",
+            mode = opts$mode,
+            line = list(shape = "spline")
+          )
+        }
+      } else {
+        plt <- add_trace(
+          plt,
+          x = df$date,
+          y = df[[col]],
+          name = col_name,
+          type = "scatter",
+          mode = opts$mode,
+          line = list(shape = "spline")
+        )
+      }
+    }
+
+    plt
+  })
+
+  ## data_dt // renderDT ----
+  output$data_dt <- renderDT({
+    selected_data() %>%
+      mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character))
+  },
+    extensions = "FixedColumns",
+    options = list(
+      autoWidth = TRUE,
+      dom = "trip",
+      scrollResize = TRUE,
+      scrollX = TRUE,
+      scrollY = 400,
+      scrollCollapse = TRUE,
+      pageLength = 24,
+      fixedColumns = list(leftColumns = 1)
+    )
+  )
+
+  ## download_data // downloadHandler ----
+  output$download_data <- downloadHandler(
+    paste(req(input$data_type), "weather.csv"),
+    function(file) {
+      selected_data() %>%
+        mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character)) %>%
+        clean_names("big_camel") %>%
+        write_excel_csv(file, na = "")
+    }
+  )
 
 }
 

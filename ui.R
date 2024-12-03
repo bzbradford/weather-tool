@@ -1,27 +1,5 @@
 #-- ui.R --#
 
-sidebarUI <- function() {
-  div(
-    materialSwitch("multi_site", "Multi site mode"),
-    uiOutput("site_ui"),
-    uiOutput("date_ui"),
-    uiOutput("action_ui")
-  )
-}
-
-mapUI <- function() {
-  div(
-    div(
-      style = "margin-bottom: 10px;",
-      leafletOutput("map", height = "600px"),
-    ),
-    fluidRow(
-      column(6, uiOutput("searchbox_ui")),
-      column(6, uiOutput("coord_search_ui"))
-    )
-  )
-}
-
 ui <- dashboardPage(
   header = dashboardHeader(
     title = "IBM Weather Data Portal"
@@ -45,14 +23,28 @@ ui <- dashboardPage(
         solidHeader = T,
         collapsible = T,
         status = "primary",
-        sidebarUI()
+        div(
+          materialSwitch("multi_site", "Multi site mode"),
+          uiOutput("site_ui"),
+          uiOutput("date_ui"),
+          uiOutput("action_ui")
+        )
       ),
       box(
         title = "Map",
         width = 5,
         collapsible = T,
         status = "primary",
-        mapUI()
+        div(
+          div(
+            style = "margin-bottom: 10px;",
+            leafletOutput("map", height = "600px"),
+          ),
+          fluidRow(
+            column(6, uiOutput("searchbox_ui")),
+            column(6, uiOutput("coord_search_ui"))
+          )
+        )
       ),
       box(
         title = "Weather data",
