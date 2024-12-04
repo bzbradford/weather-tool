@@ -1,53 +1,207 @@
 
-/*
+/*-- UW STYLE --*/
+
 :root {
-  --card-header-color: lightsteelblue;
+  --uwHeaderColor: #c5050c;
+  --uwTextFont: Red Hat Text, sans-serif;
+  --uwDisplayFont: Red Hat Display, sans-serif;
 }
-*/
+
+html, body, div, span, applet, object, iframe,
+h1, h2, h3, h4, h5, h6, p, blockquote, pre,
+a, abbr, acronym, address, big, cite, code,
+del, dfn, em, font, ins, kbd, q, s, samp,
+small, strike, strong, sub, sup, tt, var,
+dl, dt, dd, ol, ul, li,
+fieldset, form, label, legend, button,
+table, caption, tbody, tfoot, thead, tr, th, td {
+  font-family: inherit;
+}
+
+html, body, header {
+  font-family: var(--uwTextFont);
+}
+
+header {
+  width: 100%;
+  height: 50px;
+  padding: 5px;
+  background-color: var(--uwHeaderColor);
+  color: white;
+  font-weight: bold;
+  font-size: 2rem;
+  display: inline-flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2rem;
+}
+
+.uw-title {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.uw-title img {
+  height: 40px;
+}
+
+.uw-title h1 {
+  padding: 0;
+  margin: 0;
+  line-height: 40px;
+  font-size: 3rem;
+}
+
+.help-btn {
+  margin: 10px;
+}
+
+.help-btn a {
+  color: #fff;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--uwDisplayFont);
+}
 
 /* fix for DTOutput and server=TRUE */
 table {
   table-layout: fixed;
 }
 
-/* z-index must be less than datepicker */
-.main-header {
-  z-index: 500;
+.shiny-input-container:not(.shiny-input-container-inline) {
+  width: unset;
 }
 
-.site-tbl-container {
-  max-height: 400px;
-  overflow: auto;
-  margin-bottom: 10px;
+.container-fluid {
+  padding: 0;
 }
 
-/*
-#page-header {
-  background: lightsteelblue;
-  border: 1px solid steelblue;
+/* Container Styles */
+.main-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 1rem;
+/*  min-height: calc(100vh - 50px);*/
+}
+
+/* Column Styles */
+.column {
+  padding: 1rem;
+  background-color: #f4f4f4;
+  border: 1px solid #ddd;
   border-radius: 5px;
+  box-shadow: 2px 2px 4px rgba(0, 0, 0, 0.1);
+  box-sizing: border-box;
+  overflow: auto;
+}
+
+.column.map-container {
+  padding: 0;
+}
+
+.column h2 {
+  font-size: 2rem;
   font-weight: bold;
+  margin: 0px;
+  padding-bottom: 1rem;
 }
 
-.content-box {
-  min-height: 300px;
-  background: lightsteelblue;
+/* Default layout: three columns */
+.sidebar-container {
+  flex: 0 0 calc(20% - 0.67rem);
 }
 
-.flex-row {
+.map-container {
+  flex: 0 0 calc(40% - 0.67rem);
+}
+
+.data-container {
+  flex: 0 0 calc(40% - 0.67rem);
+}
+
+/* Layout for screens narrower than 1000px */
+@media (max-width: 1200px) {
+  .sidebar-container, .map-container {
+    flex: 0 0 calc(50% - .5rem); /* Two columns side by side */
+  }
+  .data-container {
+    flex: 0 0 100%; /* Third column on a new row */
+  }
+}
+
+/* Layout for screens narrower than 500px */
+@media (max-width: 600px) {
+  .column {
+    flex: 0 0 100%; /* All columns stack vertically */
+  }
+}
+
+.flex-down {
   display: flex;
   flex-direction: column;
   flex-wrap: wrap;
-  gap: 20px;
+  gap: 10px;
 }
 
-.tab-content {
-  padding: 5px;
+.flex-across {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+/*  justify-content: space-between;*/
+  gap: 10px;
 }
-*/
+
+.flex-across > .btn {
+  flex: 1;
+}
+
+.site-tbl-container {
+  max-width: 100%;
+  max-height: 400px;
+  overflow: auto;
+}
+
+.submit-btn {
+  margin-top: 1rem;
+}
+
+.submit-btn > button {
+  width: 100%;
+  font-weight: bold;
+}
+
+.submit-btn > button:enabled {
+  background-color: #218cb9;
+  border: 1px solid #00a8dc;
+  color: white;
+}
 
 
 /*-- LEAFLET --*/
+
+.map-container {
+  position: relative;
+  min-height: min(800px, 100vh);
+}
+
+.search-overlay {
+  position: absolute;
+  bottom: 0;
+  width: 100%;
+  display: inline-flex;
+  padding: 0 1rem;
+  gap: 1rem;
+}
+
+.search-overlay > div {
+  flex: 1;
+}
+
+#coord_search input {
+  flex: 1;
+}
 
 .leaflet-control-attribution {
   display: none;
@@ -58,9 +212,15 @@ table {
   font-weight: bold;
 }
 
-/*
 .leaflet-control-layers-overlays::before {
   content: 'Layers:';
   font-weight: bold;
 }
-*/
+
+/*-- PLOTLY --*/
+
+.plotly-container {
+  border: 1px solid #ddd;
+  margin-bottom: 1rem;
+  background: #fff;
+}

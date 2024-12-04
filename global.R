@@ -3,21 +3,24 @@
 # dev ----
 # shiny::devmode(TRUE)
 # renv::snapshot()
+# renv::update()
+# renv::clean()
 
 
 suppressPackageStartupMessages({
   library(tidyverse)
   library(janitor)
   library(sf)
-  library(fst)
-  # library(httr2) # requests
+  library(fst) # file storage
+  library(httr2) # requests
+  library(RColorBrewer) # palette
   # library(zoo) # rollmean
   # library(lutz) # timezones
 
   library(shiny)
   # library(bslib)
   library(shinydashboard)
-  # library(shinythemes)
+  library(shinythemes)
   library(shinyWidgets)
   library(shinyBS)
   library(shinyjs)
@@ -31,7 +34,7 @@ suppressPackageStartupMessages({
 })
 
 
-# Functions ---------------------------------------------------------------
+# Functions --------------------------------------------------------------------
 
 # ternary operator
 # `?` <- function(x, y) {
@@ -121,8 +124,6 @@ ibm_chunks <- function(start_date, end_date, tz = "UTC") {
 #' @return hourly weather data response as tibble
 #' documentation: https://docs.google.com/document/d/13HTLgJDpsb39deFzk_YCQ5GoGoZCO_cRYzIxbwvgJLI/edit?tab=t.0
 get_ibm <- function(lat, lng, start_date, end_date) {
-  require(httr2)
-
   stime <- Sys.time()
   tz <- lutz::tz_lookup_coords(lat, lng, warn = F)
   chunks <- ibm_chunks(start_date, end_date, tz)
@@ -325,7 +326,7 @@ add_disease_probs <- function(daily) {
 }
 
 
-# Disease models ----------------------------------------------------------
+# Disease models ---------------------------------------------------------------
 
 # Logistic function to convert logit to probability
 logistic <- function(logit) {
@@ -380,7 +381,7 @@ predict_tarspot <- function(temp_mean_30ma, rh_max_30ma, hours_rh90_night_14ma) 
 
 
 
-# Load data ----
+# Load data --------------------------------------------------------------------
 
 sites_template <- tibble(
   id = integer(),
@@ -390,15 +391,17 @@ sites_template <- tibble(
   temp = logical()
 )
 
-ibm_cols <- read_csv("data/ibm_cols.csv", show_col_types = F)
+# ibm_cols <- read_csv("data/ibm_cols.csv", show_col_types = F)
 
 saved_weather <- if (file.exists("saved_weather.fst")) {
   as_tibble(read_fst("saved_weather.fst"))
 }
 
+# counties_sf <- read_rds("data/counties-conus.rds")
 
 
-# Settings ----
+
+# Settings ---------------------------------------------------------------------
 
 OPTS <- lst(
   ibm_endpoint = "https://api.weather.com/v3/wx/hod/r1/direct",
@@ -416,10 +419,14 @@ OPTS <- lst(
   ),
 
   # dates
-  earliest_date = make_date(2024, 1, 1),
+  earliest_date = make_date(2015, 1, 1),
   default_start_date = today() - 30,
 
   # map
+  factor_colors = {
+    qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+    unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+  },
   map_bounds_wi = list(
     lat1 = 42.4,
     lat2 = 47.1,
@@ -427,10 +434,10 @@ OPTS <- lst(
     lng2 = -86.8
   ),
   map_bounds_us = list(
-    lat1 = 24.5,
-    lat2 = 49.0,
-    lng1 = -125.0,
-    lng2 = -66.9
+    lat1 = 24.0,
+    lat2 = 50.0,
+    lng1 = -125.5,
+    lng2 = -66.0
   ),
   map_tiles = list(
     "ESRI Topo" = providers$Esri.WorldTopoMap,
@@ -438,10 +445,9 @@ OPTS <- lst(
     "OpenStreetMap" = providers$OpenStreetMap,
     "Grey Canvas" = providers$CartoDB.Positron
   ),
-  # map_layers = list(
-  #   grid = "Data grid",
-  #   counties = "Counties/Regions"
-  # ),
+  map_layers = list(
+    # counties = "States/Counties"
+  ),
   map_click_zoom = 10,
 
   # allowable names for site loading
@@ -470,7 +476,30 @@ OPTS <- lst(
 )
 
 
-# Data structures ----
+
+# Development ------------------------------------------------------------------
+
+## County shapefile ----
+
+prep_counties <- function() {
+  states <- read_sf("prep/cb-2018-conus-state-20m.geojson") %>%
+    clean_names() %>%
+    st_drop_geometry() %>%
+    select(statefp, state_name = name)
+
+  counties_sf <- read_sf("prep/cb-2018-conus-county-5m.geojson") %>%
+    clean_names() %>%
+    select(statefp, countyfp, county_name = name, geometry) %>%
+    left_join(states) %>%
+    relocate(state_name, .after = statefp)
+
+  counties_sf %>% write_rds("data/counties-conus.rds")
+}
+
+# prep_counties()
+
+
+## Data structures ----
 
 cat_names <- function(df) {
   message(deparse(substitute(df)))
@@ -494,5 +523,3 @@ get_specs <- function() {
 }
 
 # get_specs()
-
-

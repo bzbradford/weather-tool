@@ -107,43 +107,42 @@ server <- function(input, output, session) {
 
 
 
+  # Help UI ----
+
+  observe({
+    mod <- modalDialog(
+      h2("Gridded Weather Data Tool"),
+      p("Use this tool to easily download hourly weather data for any point in the continental United States. Weather data is provided by a subscription to IBM's weather service, which powers The Weather Channel among others. From this hourly weather data, we compute daily values, moving averages, and certain plant disease risk probabilities."),
+      p("Additonal information will be added here when available."),
+      footer = modalButton("Close"),
+      easyClose = TRUE
+    )
+    showModal(mod)
+  }) %>% bindEvent(input$help)
+
   # Sidebar UI ----
 
   ## site_ui // renderUI ----
   output$site_ui <- renderUI({
-    id <- ifelse(input$multi_site, "multi_site_ui", "single_site_ui")
-    div(
-      style = "margin-bottom: 1em;",
-      uiOutput(id)
-    )
-  })
-
-  ## single_site_ui // renderUI ----
-  output$single_site_ui <- renderUI({
-    div(
-      class = "site-tbl-container",
-      tableOutput("sites_tbl")
-    )
-  })
-
-  ## multi_site_ui // renderUI ----
-  output$multi_site_ui <- renderUI({
-    div(
-      p(em("Load or queue up multiple sites. A clicked or searched location must be clicked again to save it to the list.")),
-
-      uiOutput("temp_site_ui"),
-      tags$label("Saved sites:"),
+    btn <- function(id, label, ...) actionButton(id, label, class = "btn-sm", ...)
+    if (input$multi_site) {
       div(
-        class = "site-tbl-container",
-        tableOutput("sites_tbl")
-      ),
-      p(
-        actionButton("load_example", "Test sites", class = "btn-small"),
-        actionButton("upload_csv", "Upload csv"),
-        actionButton("clear_sites", "Clear sites")
-      ),
-      uiOutput("file_upload_ui"),
-    )
+        class = "flex-down",
+        p(em("Load or queue up multiple sites. A clicked or searched location must be clicked again to save it to the list.")),
+        uiOutput("temp_site_ui"),
+        tags$label("Saved sites:"),
+        uiOutput("sites_tbl"),
+        div(
+          class = "flex-across",
+          btn("load_example", "Test sites"),
+          btn("upload_csv", "Upload csv"),
+          btn("clear_sites", "Clear sites")
+        ),
+        uiOutput("file_upload_ui"),
+      )
+    } else {
+      tableOutput("sites_tbl")
+    }
   })
 
   ## temp_site_ui // renderUI ----
@@ -246,6 +245,14 @@ server <- function(input, output, session) {
 
   ## date_ui // renderUI ----
   output$date_ui <- renderUI({
+    tagList(
+      uiOutput("date_select_ui"),
+      uiOutput("date_btns_ui")
+    )
+  })
+
+  ## date_select_ui // renderUI ----
+  output$date_select_ui <- renderUI({
     today <- Sys.Date()
     dates <- as_date(c(
       coalesce(input$start_date, OPTS$default_start_date),
@@ -257,29 +264,67 @@ server <- function(input, output, session) {
         label = "Start date:",
         min = OPTS$earliest_date,
         max = today,
-        value = min(dates)
+        value = min(dates),
+        width = "100%"
       ),
       dateInput(
         inputId = "end_date",
         label = "End date:",
         min = OPTS$earliest_date,
         max = today,
-        value = max(dates)
+        value = max(dates),
+        width = "100%"
       )
     )
   })
+
+  ## date_btns_ui // renderUI ----
+  output$date_btns_ui <- renderUI({
+    btn <- function(id, label) actionButton(id, label, class = "btn btn-sm")
+    div(
+      class = "flex-across",
+      btn("date_last_year", "Last year"),
+      btn("date_this_year", "This year"),
+      btn("date_past_month", "Past month")
+    )
+  })
+
+  ## Handle date buttons ----
+  observe({
+    yr <- year(today()) - 1
+    updateDateInput(inputId = "start_date", value = make_date(yr, 1, 1))
+    updateDateInput(inputId = "end_date", value = make_date(yr, 12, 31))
+  }) %>% bindEvent(input$date_last_year)
+
+  observe({
+    yr <- year(today())
+    updateDateInput(inputId = "start_date", value = make_date(yr, 1, 1))
+    updateDateInput(
+      inputId = "end_date",
+      value = min(make_date(yr, 12, 31), today())
+    )
+  }) %>% bindEvent(input$date_this_year)
+
+  observe({
+    updateDateInput(inputId = "start_date", value = today() - 30)
+    updateDateInput(inputId = "end_date", value = today())
+  }) %>% bindEvent(input$date_past_month)
+
 
   # Sidebar - Fetch weather ----
 
   ## action_ui // renderUI ----
   output$action_ui <- renderUI({
-    btn <- function(msg, ...) actionButton("get", msg, width = "100%", ...)
+    btn <- function(msg, ...) actionButton("get", msg, ...)
     sites <- sites_df()
-    if (nrow(sites) == 0) {
-      btn("No sites selected", disabled = TRUE)
-    } else {
-      btn("Fetch weather")
-    }
+    div(
+      class = "submit-btn",
+      if (nrow(sites) == 0) {
+        btn("No sites selected", disabled = TRUE)
+      } else {
+        btn("Fetch weather")
+      }
+    )
   })
 
   ## Handle fetching ----
@@ -371,12 +416,13 @@ server <- function(input, output, session) {
     leaflet(options = leafletOptions(preferCanvas = T)) %>%
       add_basemaps() %>%
       fit_bounds(OPTS$map_bounds_wi) %>%
+      addMapPane("extent", 400) %>%
       addMapPane("counties", 410) %>%
       addMapPane("grid", 420) %>%
       addMapPane("sites", 430) %>%
       addLayersControl(
         baseGroups = names(OPTS$map_tiles),
-        # overlayGroups = unlist(OPTS$map_layers, use.names = F),
+        overlayGroups = unlist(OPTS$map_layers, use.names = F),
         options = layersControlOptions(collapsed = T)
       ) %>%
       addEasyButtonBar(btn1, btn2, btn3) %>%
@@ -388,14 +434,41 @@ server <- function(input, output, session) {
         hoverToWake = T,
         sleepNote = F,
         sleepOpacity = 1
+      ) %>%
+      addRectangles(
+        lat1 = OPTS$map_bounds_us$lat1,
+        lat2 = OPTS$map_bounds_us$lat2,
+        lng1 = OPTS$map_bounds_us$lng1,
+        lng2 = OPTS$map_bounds_us$lng2,
+        color = "black", weight = 2,
+        fill = FALSE,
+        options = pathOptions(pane = "extent", interactive = FALSE)
       )
   })
+
+  ## Add counties to map ----
+  # observe({
+  #   delay(100, {
+  #     leafletProxy("map") %>%
+  #       addPolygons(
+  #         data = counties_sf,
+  #         group = OPTS$map_layers$counties,
+  #         label = ~paste0("<b>", state_name, "</b></br>", county_name, " County") %>%
+  #           lapply(HTML),
+  #         color = "black", weight = .2, opacity = .2,
+  #         fillColor = ~colorFactor(OPTS$factor_colors, state_name)(state_name),
+  #         fillOpacity = .1,
+  #         options = pathOptions(pane = "counties")
+  #       )
+  #   })
+  # })
 
   ## searchbox_ui // renderUI ----
   output$searchbox_ui <- renderUI({
     div(
       HTML(paste0("<script async src='https://maps.googleapis.com/maps/api/js?key=", OPTS$google_key, "&loading=async&libraries=places&callback=initAutocomplete'></script>")),
-      textInput("searchbox", "Find a location by name")
+      # textInput("searchbox", "Find a location by name")
+      textInput("searchbox", NULL)
     )
   })
 
@@ -410,13 +483,17 @@ server <- function(input, output, session) {
       });
     ")
     div(
-      div(tags$label("Find a location by coordinates")),
+      style = "display: flex; flex-direction: column;",
+      # div(tags$label("Find a location by coordinates")),
       div(
-        style = "display: inline-flex; gap: 5px; max-width: 100%;",
-        textInput(
-          inputId = "coord_search",
-          label = NULL,
-          placeholder = "Enter coordinates"
+        style = "display: inline-flex; gap: 5px;",
+        div(
+          style = "flex: 1;",
+          textInput(
+            inputId = "coord_search",
+            label = NULL,
+            placeholder = "Enter coordinates"
+          )
         ),
         div(
           style = "margin-bottom: 10px;",
@@ -608,9 +685,9 @@ server <- function(input, output, session) {
       filter(date > selected_dates()$start) %>%
       filter(date < selected_dates()$end)
     sites %>%
-      drop_na(grid_id) %>%
       select(-c(grid_lat, grid_lng)) %>%
       left_join(data, join_by(grid_id)) %>%
+      drop_na(grid_id, date) %>%
       select(-grid_id) %>%
       rename(all_of(site_attr)) %>%
       mutate(across(where(is.numeric), ~signif(.x)))
@@ -618,8 +695,11 @@ server <- function(input, output, session) {
 
   observe({
     sr <- nrow(sites_df()) > 0
-    wr <- nrow(selected_data()) > 0
     if (rv$sites_ready != sr) rv$sites_ready <- sr
+  })
+
+  observe({
+    wr <- nrow(selected_data()) > 0
     if (rv$weather_ready != wr) rv$weather_ready <- wr
   })
 
@@ -654,18 +734,18 @@ server <- function(input, output, session) {
   ## dataset_ui // renderUI ----
   output$dataset_ui <- renderUI({
     validate(need(rv$sites_ready, "No sites selected, click on the map or load sites in the sidebar."))
-    validate(need(rv$weather_ready, "No weather data downloaded yet for the selected sites."))
+    validate(need(rv$weather_ready, "No weather data downloaded yet for the selected dates. Click 'Fetch Weather' to download."))
 
     tagList(
       uiOutput("data_msg"),
       h4("Data chart"),
       uiOutput("plot_ui"),
-      bsCollapse(
-        bsCollapsePanel(
-          title = "View data table",
-          DTOutput("data_dt")
-        )
-      ),
+      # bsCollapse(
+      #   bsCollapsePanel(
+      #     title = "View data table",
+      #     DTOutput("data_dt", width = "400px")
+      #   )
+      # ),
       downloadButton("download_data", "Download dataset")
     )
   })
@@ -688,7 +768,10 @@ server <- function(input, output, session) {
     div(
       uiOutput("plot_sites"),
       uiOutput("plot_cols"),
-      plotlyOutput("data_plot")
+      div(
+        class = "plotly-container",
+        plotlyOutput("data_plot")
+      )
     )
   })
 
