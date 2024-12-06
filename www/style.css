@@ -1,5 +1,5 @@
 
-/*-- UW STYLE --*/
+/*--- UW STYLE ---*/
 
 :root {
   --uwHeaderColor: #c5050c;
@@ -21,6 +21,13 @@ table, caption, tbody, tfoot, thead, tr, th, td {
 html, body, header {
   font-family: var(--uwTextFont);
 }
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--uwDisplayFont);
+}
+
+
+/*--- HEADER ---*/
 
 header {
   width: 100%;
@@ -60,30 +67,29 @@ header {
   color: #fff;
 }
 
-h1, h2, h3, h4, h5, h6 {
-  font-family: var(--uwDisplayFont);
+
+/*--- FOOTER ---*/
+
+.footer {
+  padding: 10px;
+  text-align: right;
+  color: #888;
+  font-style: italic;
+  font-size: 1rem;
 }
 
-/* fix for DTOutput and server=TRUE */
-table {
-  table-layout: fixed;
-}
 
-.shiny-input-container:not(.shiny-input-container-inline) {
-  width: unset;
-}
+/*--- LAYOUT ---*/
 
 .container-fluid {
   padding: 0;
 }
 
-/* Container Styles */
 .main-container {
   display: flex;
   flex-wrap: wrap;
   gap: 1rem;
   padding: 1rem;
-/*  min-height: calc(100vh - 50px);*/
 }
 
 /* Column Styles */
@@ -108,20 +114,20 @@ table {
   padding-bottom: 1rem;
 }
 
-/* Default layout: three columns */
 .sidebar-container {
   flex: 0 0 calc(20% - 0.67rem);
 }
 
 .map-container {
   flex: 0 0 calc(40% - 0.67rem);
+  position: relative;
+  min-height: min(800px, 100vh, 100vw);
 }
 
 .data-container {
   flex: 0 0 calc(40% - 0.67rem);
 }
 
-/* Layout for screens narrower than 1000px */
 @media (max-width: 1200px) {
   .sidebar-container, .map-container {
     flex: 0 0 calc(50% - .5rem); /* Two columns side by side */
@@ -131,10 +137,13 @@ table {
   }
 }
 
-/* Layout for screens narrower than 500px */
 @media (max-width: 600px) {
   .column {
     flex: 0 0 100%; /* All columns stack vertically */
+  }
+
+  .uw-title h1 {
+    font-size: 2rem;
   }
 }
 
@@ -155,6 +164,18 @@ table {
 
 .flex-across > .btn {
   flex: 1;
+}
+
+
+/*--- STYLES ---*/
+
+/* fix for DTOutput and server=TRUE */
+table {
+  table-layout: fixed;
+}
+
+.shiny-input-container:not(.shiny-input-container-inline) {
+  width: unset;
 }
 
 .site-tbl-container {
@@ -179,12 +200,7 @@ table {
 }
 
 
-/*-- LEAFLET --*/
-
-.map-container {
-  position: relative;
-  min-height: min(800px, 100vh);
-}
+/*--- LEAFLET ---*/
 
 .search-overlay {
   position: absolute;
@@ -217,10 +233,22 @@ table {
   font-weight: bold;
 }
 
-/*-- PLOTLY --*/
+
+/*--- PLOTLY ---*/
 
 .plotly-container {
   border: 1px solid #ddd;
   margin-bottom: 1rem;
   background: #fff;
+}
+
+.reset-plot {
+  margin-bottom: 15px;
+  width: 30px;
+  align-self: center;
+  font-size: 2rem;
+}
+
+.reset-plot a {
+  color: #293e4f;
 }

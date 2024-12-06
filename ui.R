@@ -1,7 +1,7 @@
 #-- ui.R --#
 
 ui <- fluidPage(
-  title = "Gridded Weather Data Tool",
+  title = OPTS$app_title,
   theme = shinytheme("flatly"),
   tags$head(
     tags$meta(charset = "UTF-8"),
@@ -20,7 +20,7 @@ ui <- fluidPage(
     div(class = "uw-title",
       # img(src = "crop-protection-network-logo.png"),
       img(src = "uw-crest.svg"),
-      h1("Gridded Weather Data Tool")
+      h1(OPTS$app_title)
     ),
     div(class = "help-btn", actionLink("help", icon("circle-info")))
   ),
@@ -44,6 +44,13 @@ ui <- fluidPage(
     div(class = "column data-container",
       h2("Data"),
       uiOutput("data_ui")
+    )
+  ),
+  tags$footer(
+    div(class = "footer",
+      "Developed by",
+      a("Ben Bradford", href = "https://entomology.wisc.edu/directory/ben-bradford/", target = "_blank", .noWS = "after"),
+      ", UW-Madison Entomology"
     )
   )
 )

@@ -79,17 +79,20 @@ server <- function(input, output, session) {
       st_as_sf(coords = c("lng", "lat"), crs = 4326, remove = F)
   })
 
-  ## wx_hourly ----
-  wx_hourly <- reactive({
-    weather <- req(rv$weather)
-    req(nrow(weather) > 0)
-    build_hourly(weather)
-  })
-
   ## wx_grids ----
   wx_grids <- reactive({
-    wx_hourly() %>%
-      build_grids()
+    weather <- req(rv$weather)
+    req(nrow(weather) > 0)
+    build_grids(weather)
+  })
+
+  ## wx_hourly ----
+  wx_hourly <- reactive({
+    weather <- req(rv$weather) %>%
+      filter(grid_id %in% sites_with_grid()$grid_id) %>%
+      filter(between(date, selected_dates()$start, selected_dates()$end))
+    req(nrow(weather) > 0)
+    weather %>% build_hourly()
   })
 
   ## sites_with_grid ----
@@ -101,8 +104,23 @@ server <- function(input, output, session) {
 
   ## wx_daily ----
   wx_daily <- reactive({
-    wx_hourly() %>%
-      build_daily()
+    wx_hourly() %>% build_daily()
+  })
+
+  ## wx_ma ----
+  # moving averages
+  wx_ma <- reactive({
+    wx_daily() %>% build_ma()
+  })
+
+  wx_disease <- reactive({
+    d1 <- wx_ma() %>% build_disease_from_ma()
+    d2 <- wx_daily() %>% build_disease_from_daily()
+    left_join(d1, d2, join_by(grid_id, date))
+  })
+
+  wx_gdd <- reactive({
+    wx_daily() %>% build_gdd()
   })
 
 
@@ -111,7 +129,7 @@ server <- function(input, output, session) {
 
   observe({
     mod <- modalDialog(
-      h2("Gridded Weather Data Tool"),
+      title = OPTS$app_title,
       p("Use this tool to easily download hourly weather data for any point in the continental United States. Weather data is provided by a subscription to IBM's weather service, which powers The Weather Channel among others. From this hourly weather data, we compute daily values, moving averages, and certain plant disease risk probabilities."),
       p("Additonal information will be added here when available."),
       footer = modalButton("Close"),
@@ -180,7 +198,7 @@ server <- function(input, output, session) {
     req(rv$show_upload)
     div(
       tags$label("Upload csv"), br(),
-      em("Upload a csv with three columns: name/location, lat/latitude, lng/long/longitude. Latitude and longitude must be in +/- decimal degrees."),
+      em("Upload a csv with three columns: name/location, lat/latitude, lng/long/longitude. Latitude and longitude must be in +/- decimal degrees. Maximum of 10 sites."),
       fileInput(
         inputId = "sites_csv",
         label = NULL,
@@ -207,7 +225,7 @@ server <- function(input, output, session) {
       filter(validate_ll(lat, lng)) %>%
       mutate(id = row_number(), .before = 1) %>%
       mutate(temp = FALSE) %>%
-      head(100)
+      head(10)
     req(nrow(df) > 0)
     rv$selected_site <- 1
     df
@@ -342,7 +360,8 @@ server <- function(input, output, session) {
       if (nrow(wx) > 0) {
         grids <- build_grids(wx)
         grid_dates <- wx %>%
-          distinct(grid_id, date)
+          summarize(hours = n(), .by = c(grid_id, date)) %>%
+          filter(hours > 12)
         dates_have <- site %>%
           st_join(grids) %>%
           left_join(grid_dates, join_by(grid_id)) %>%
@@ -354,7 +373,7 @@ server <- function(input, output, session) {
 
       # get weather if needed
       if (length(dates) > 0) {
-        resp <- get_ibm(site$lat, site$lng, first(dates), last(dates))
+        resp <- get_ibm(site$lat, site$lng, first(dates) - 1, last(dates) + 1)
         new_wx <- clean_ibm(resp)
         wx <- bind_rows(wx, new_wx) %>%
           distinct(grid_id, datetime_utc, .keep_all = T)
@@ -431,7 +450,7 @@ server <- function(input, output, session) {
       suspendScroll(
         sleepTime = 0,
         wakeTime = 1000,
-        hoverToWake = T,
+        hoverToWake = F,
         sleepNote = F,
         sleepOpacity = 1
       ) %>%
@@ -456,7 +475,7 @@ server <- function(input, output, session) {
   #         label = ~paste0("<b>", state_name, "</b></br>", county_name, " County") %>%
   #           lapply(HTML),
   #         color = "black", weight = .2, opacity = .2,
-  #         fillColor = ~colorFactor(OPTS$factor_colors, state_name)(state_name),
+  #         fillColor = ~colorFactor(OPTS$state_colors, state_name)(state_name),
   #         fillOpacity = .1,
   #         options = pathOptions(pane = "counties")
   #       )
@@ -511,19 +530,32 @@ server <- function(input, output, session) {
     map <- leafletProxy("map")
     clearGroup(map, "sites")
     clearGroup(map, "temp")
-    sites <- sites_with_grid()
+
+    sites <- if (is.null(rv$weather)) {
+      sites_df() %>%
+        mutate(
+          group = if_else(temp, "temp", "sites"),
+          icon = "download"
+        )
+    } else {
+      sites_with_grid() %>%
+        mutate(
+          icon = case_when(
+            input$multi_site & temp ~ "plus",
+            selected_dates()$start < date_min |
+              selected_dates()$end > date_max |
+              is.na(days_missing) |
+              days_missing > 0 ~ "download",
+            input$multi_site & !temp ~ as.character(id),
+            T ~ "check")
+        )
+    }
+
     req(nrow(sites) > 0)
+
     sites <- sites %>%
       mutate(
         group = if_else(temp, "temp", "sites"),
-        icon = case_when(
-          input$multi_site & temp ~ "plus",
-          selected_dates()$start < date_min |
-            selected_dates()$end > date_max |
-            is.na(days_missing) |
-            days_missing > 0 ~ "download",
-          input$multi_site & !temp ~ as.character(id),
-          T ~ "check"),
         marker_color = if_else(id == rv$selected_site, "red", "blue"),
         label = paste0(
           "<b>Site ", id, ": ", name, "</b><br>",
@@ -533,7 +565,7 @@ server <- function(input, output, session) {
           if_else(input$multi_site & temp, "<br>Temporary site", "")
         ) %>% lapply(HTML)
       )
-    req(nrow(sites) > 0)
+
     leafletProxy("map") %>%
       addAwesomeMarkers(
         data = sites,
@@ -559,8 +591,8 @@ server <- function(input, output, session) {
         "Earliest date: ", date_min, "<br>",
         "Latest date: ", date_max, "<br>",
         "Total days: ", days_expected, "<br>",
-        "Missing days: ", days_missing, sprintf(" (%.1f%%)", days_missing_pct), "<br>",
-        "Missing hours: ", hours_missing, sprintf(" (%.1f%%)", hours_missing_pct), "<br>",
+        "Missing days: ", days_missing, sprintf(" (%.1f%%)", 100 * days_missing_pct), "<br>",
+        "Missing hours: ", hours_missing, sprintf(" (%.1f%%)", 100 * hours_missing_pct), "<br>",
         "Center latitude: ", sprintf("%.2f", grid_lat), "<br>",
         "Center longitude: ", sprintf("%.2f", grid_lng)
       ) %>% lapply(HTML))
@@ -662,7 +694,7 @@ server <- function(input, output, session) {
   ## Handle marker click ----
   observe({
     marker <- req(input$map_marker_click)
-    rv$selected_site <- marker$id
+    if (rv$selected_site != marker$id) rv$selected_site <- marker$id
     if (input$multi_site && marker$group == "temp") {
       rv$sites <- rv$sites %>% mutate(temp = FALSE)
     }
@@ -676,16 +708,21 @@ server <- function(input, output, session) {
 
   ## selected_data // reactive ----
   selected_data <- reactive({
-    sites <- sites_with_grid()
+    sites <- sites_with_grid() %>%
+      select(id, name, lat, lng, grid_id)
     type <- req(input$data_type)
-    data <- if (type == "hourly") wx_hourly()
-      else if (type == "daily") wx_daily()
-      else rv$weather %>% arrange(datetime_utc)
+    data <- switch(
+      req(input$data_type),
+      "hourly" = wx_hourly(),
+      "daily" = wx_daily(),
+      "ma" = wx_ma(),
+      "disease" = wx_disease(),
+      "gdd" = wx_gdd()
+    )
     data <- data %>%
-      filter(date > selected_dates()$start) %>%
-      filter(date < selected_dates()$end)
+      filter(date >= selected_dates()$start) %>%
+      filter(date <= selected_dates()$end)
     sites %>%
-      select(-c(grid_lat, grid_lng)) %>%
       left_join(data, join_by(grid_id)) %>%
       drop_na(grid_id, date) %>%
       select(-grid_id) %>%
@@ -721,7 +758,7 @@ server <- function(input, output, session) {
   ## data_ui // renderUI ----
   output$data_ui <- renderUI({
     tagList(
-      p(em("Selected weather parameters and additional generated data columns. All units are metric. Temperature and dew point: degrees Celsius, relative humidity: %, wind speed: meters/second, precipitation: mm, snow: cm, visibility: km.")),
+      p(em("Currently no unit conversion is available. Temperature and dew point: Celsius (°C), precipitation (rain/melted snow): millimeters (mm), snow accumulation: centimeters (cm), relative humidity: %, pressure: millimeters mercury (mmHg), wind speed: kilometers/hour (km/hr), wind direction: compass degrees (N=0°, E=90°, etc.). Growing degree day base/upper thresholds and accumulations in Fahrenheit.")),
       radioGroupButtons(
         "data_type",
         label = "Dataset",
@@ -740,12 +777,6 @@ server <- function(input, output, session) {
       uiOutput("data_msg"),
       h4("Data chart"),
       uiOutput("plot_ui"),
-      # bsCollapse(
-      #   bsCollapsePanel(
-      #     title = "View data table",
-      #     DTOutput("data_dt", width = "400px")
-      #   )
-      # ),
       downloadButton("download_data", "Download dataset")
     )
   })
@@ -789,25 +820,64 @@ server <- function(input, output, session) {
     )
   })
 
+  ## plot_cols // reactive ----
+  plot_cols <- reactive({
+    # cols <- OPTS$plot_cols[[req(input$data_type)]]
+    cols <- names(selected_data())
+    cols <- cols[!(cols %in% OPTS$plot_ignore_cols)]
+    set_names(cols, make_clean_names(cols, "title"))
+  })
+
   ## plot_cols // renderUI ----
   output$plot_cols <- renderUI({
-    plot_cols <- OPTS$plot_cols[[req(input$data_type)]]
-    names(plot_cols) <- make_clean_names(plot_cols, "title")
-    checkboxGroupInput(
-      inputId = "plot_cols",
-      label = "Weather parameters",
-      choices = plot_cols,
-      selected = plot_cols[1],
-      inline = TRUE
+    cols <- plot_cols()
+    prev_selection <- if (isTruthy(isolate(input$plot_cols))) {
+      intersect(input$plot_cols, cols)
+    }
+    div(
+      # tags$label("Weather parameters"),
+      div(
+        class = "flex-across",
+        div(
+          style = "flex:1;",
+          selectizeInput(
+            inputId = "plot_cols",
+            label = NULL,
+            choices = cols,
+            selected = coalesce(prev_selection, cols[1]),
+            multiple = TRUE,
+            options = list(plugins = list("remove_button"))
+          )
+        ),
+        div(
+          class = "reset-plot",
+          actionLink("reset_plot_cols", icon("refresh"))
+        )
+      )
     )
   })
+
+  ## Reset plot columns ----
+  reset_plot_cols <- function() {
+    updateSelectizeInput(
+      inputId = "plot_cols",
+      selected = plot_cols()[1]
+    )
+  }
+
+  # reset when all columns are removed
+  # observe({ if (length(input$plot_cols) == 0) reset_plot_cols() })
+
+  # reset on button press
+  observe(reset_plot_cols()) %>% bindEvent(input$reset_plot_cols)
 
   ## data_plot // renderPlotly ----
   output$data_plot <- renderPlotly({
     df <- selected_data()
     opts <- list(
       cols = req(input$plot_cols),
-      mode = ifelse(nrow(df) <= 250, "lines+markers", "lines"),
+      mode = ifelse(nrow(df) <= 100, "lines+markers", "lines"),
+      linewidth = ifelse(nrow(df) <= 500, 2, 1),
       site_ids = unique(df$site_id),
       selected_ids = input$plot_sites
     )
@@ -818,10 +888,13 @@ server <- function(input, output, session) {
 
     if ("datetime_local" %in% names(df)) df$date <- df$datetime_local
 
+    # try to assign the columns to axes with values in similar ranges
+    # also bunches the more numerous columns on the left
     col_ranges <- df %>%
       summarize(across(all_of(opts$cols), ~max(.x, na.rm = T))) %>%
       pivot_longer(everything()) %>%
-      mutate(across(value, log1p)) %>%
+      drop_na(value) %>%
+      mutate(value = sqrt(abs(value))) %>%
       mutate(y2 = value >= mean(value) - .5) %>%
       mutate(y2 = if (mean(y2) > .5) !y2 else y2) %>%
       mutate(axis = if_else(y2, "y2", "y1"))
@@ -853,30 +926,26 @@ server <- function(input, output, session) {
       col_name <- make_clean_names(col, "title")
       col_axis <- filter(col_ranges, name == col)$axis
 
+      add_trace_to_plot <- function(plt, x, y, name) {
+        add_trace(
+          plt, x = x, y = signif(y, 3),
+          name = name, type = "scatter", mode = opts$mode,
+          yaxis = col_axis, hovertemplate = "%{y:%s}",
+          line = list(shape = "spline", width = opts$linewidth)
+        )
+      }
+
       if (input$multi_site) {
         for (id in opts$selected_ids) {
           site_df <- df %>% filter(site_id == id)
-          plt <- add_trace(
-            plt,
-            x = site_df$date,
-            y = site_df[[col]],
-            name = sprintf("Site %s: %s", id, col_name),
-            type = "scatter",
-            mode = opts$mode,
-            yaxis = col_axis,
-            line = list(shape = "spline")
+          plt <- add_trace_to_plot(
+            plt, x = site_df$date, y = site_df[[col]],
+            name = sprintf("Site %s: %s", id, col_name)
           )
         }
       } else {
-        plt <- add_trace(
-          plt,
-          x = df$date,
-          y = df[[col]],
-          name = col_name,
-          type = "scatter",
-          mode = opts$mode,
-          yaxis = col_axis,
-          line = list(shape = "spline")
+        plt <- add_trace_to_plot(
+          plt, x = df$date, y = df[[col]], name = col_name
         )
       }
     }
@@ -884,23 +953,23 @@ server <- function(input, output, session) {
     plt
   })
 
-  ## data_dt // renderDT ----
-  output$data_dt <- renderDT({
-    selected_data() %>%
-      mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character))
-  },
-    extensions = "FixedColumns",
-    options = list(
-      autoWidth = TRUE,
-      dom = "trip",
-      scrollResize = TRUE,
-      scrollX = TRUE,
-      scrollY = 400,
-      scrollCollapse = TRUE,
-      pageLength = 24,
-      fixedColumns = list(leftColumns = 1)
-    )
-  )
+  # ## data_dt // renderDT ----
+  # output$data_dt <- renderDT({
+  #   selected_data() %>%
+  #     mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character))
+  # },
+  #   extensions = "FixedColumns",
+  #   options = list(
+  #     autoWidth = TRUE,
+  #     dom = "trip",
+  #     scrollResize = TRUE,
+  #     scrollX = TRUE,
+  #     scrollY = 400,
+  #     scrollCollapse = TRUE,
+  #     pageLength = 24,
+  #     fixedColumns = list(leftColumns = 1)
+  #   )
+  # )
 
   ## download_data // downloadHandler ----
   output$download_data <- downloadHandler(
