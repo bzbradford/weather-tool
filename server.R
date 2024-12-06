@@ -130,8 +130,8 @@ server <- function(input, output, session) {
   observe({
     mod <- modalDialog(
       title = OPTS$app_title,
-      p("Use this tool to easily download hourly weather data for any point in the continental United States. Weather data is provided by a subscription to IBM's weather service, which powers The Weather Channel among others. From this hourly weather data, we compute daily values, moving averages, and certain plant disease risk probabilities."),
-      p("Additonal information will be added here when available."),
+      p("Use this tool to easily download hourly weather data for any point in the continental United States. Weather data is provided by a subscription to IBM's weather service, which powers The Weather Channel among others. From this hourly weather data, we compute daily values, moving averages, plant disease risk values, and growing degree days."),
+      p("Additonal information will be added here when available. This tool is currently under development."),
       footer = modalButton("Close"),
       easyClose = TRUE
     )
@@ -928,7 +928,7 @@ server <- function(input, output, session) {
 
       add_trace_to_plot <- function(plt, x, y, name) {
         add_trace(
-          plt, x = x, y = signif(y, 3),
+          plt, x = x, y = signif(y),
           name = name, type = "scatter", mode = opts$mode,
           yaxis = col_axis, hovertemplate = "%{y:%s}",
           line = list(shape = "spline", width = opts$linewidth)
@@ -973,7 +973,12 @@ server <- function(input, output, session) {
 
   ## download_data // downloadHandler ----
   output$download_data <- downloadHandler(
-    filename = function() paste(req(input$data_type), "weather.csv"),
+    filename = function() {
+      type <- req(input$data_type)
+      name <- invert(OPTS$data_type_choices)[[type]]
+      dates <- selected_dates()
+      paste0(name, " data ", dates$start, " - ", dates$end, ".csv")
+    },
     content = function(file) {
       selected_data() %>%
         mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character)) %>%

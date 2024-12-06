@@ -53,7 +53,15 @@ echo <- function(x) {
   print(x)
 }
 
+# convert temperature C to F
 c_to_f <- function(x) x * 1.8 + 32
+
+# swaps names and values in a list or vector
+invert <- function(x) {
+  y <- as(names(x), class(x))
+  names(y) <- x
+  y
+}
 
 #' parse lat/lng coordinates from string
 #' @param str input string containing coordinates to parse in form "lat, lng"
@@ -311,7 +319,6 @@ build_daily <- function(hourly) {
       ),
       hours_rh_over_80 = sum(relative_humidity >= 80),
       hours_rh_over_90 = sum(relative_humidity >= 90),
-      hours_rh_over_95 = sum(relative_humidity >= 95),
       hours_missing = 24 - n(),
       .by = c(grid_id, date, yday, year, month, day)
     ) %>%
@@ -325,23 +332,19 @@ build_daily <- function(hourly) {
   by_night <- hourly %>%
     mutate(
       rh80 = relative_humidity >= 80,
-      rh90 = relative_humidity >= 90,
-      rh95 = relative_humidity >= 95
+      rh90 = relative_humidity >= 90
     ) %>%
     summarize(
       hours_rh_over_80_night = sum(night & rh80),
       hours_rh_over_90_night = sum(night & rh90),
-      hours_rh_over_95_night = sum(night & rh95),
       mean_temp_rh_over_80 = if_else(sum(rh80) > 0, sum(temperature * (rh80)) / sum(rh80), NA),
       mean_temp_rh_over_90 = if_else(sum(rh90) > 0, sum(temperature * (rh90)) / sum(rh90), NA),
-      mean_temp_rh_over_95 = if_else(sum(rh95) > 0, sum(temperature * (rh90)) / sum(rh95), NA),
       .by = c(grid_id, date_since_night)
     )
   by_date %>%
     left_join(by_night, join_by(grid_id, date == date_since_night)) %>%
     left_join(lat_lng, join_by(grid_id)) %>%
     relocate(grid_lat, grid_lng, .after = grid_id) %>%
-    # relocate(hours_missing, .after = everything()) %>%
     arrange(grid_id, date)
 }
 
@@ -367,6 +370,7 @@ build_ma <- function(daily) {
   bind_cols(attr, ma)
 }
 
+# plant diseases that use moving averages as inputs
 # units must be metric: temperature degC, wind speed m
 build_disease_from_ma <- function(ma) {
   attr <- ma %>% select(grid_id, date)
@@ -391,6 +395,7 @@ build_disease_from_ma <- function(ma) {
   bind_cols(attr, disease)
 }
 
+# plant diseases that use daily values as inputs
 build_disease_from_daily <- function(daily) {
   attr <- daily %>% select(grid_id, date)
   disease <- daily %>%
@@ -561,7 +566,6 @@ carrot_foliar_dsv <- function(temp, hours) {
 # }
 
 
-
 #' Potato physiological days
 #' @param tmin Minimum daily temperature, Celsius
 #' @param tmax Maximum daily temperature, Celsius
@@ -581,12 +585,6 @@ p_val <- function(temp) {
     T ~ 0
   )
 }
-
-
-
-
-
-
 
 
 
