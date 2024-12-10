@@ -47,14 +47,14 @@ suppressPackageStartupMessages({
 #   )
 # }
 
+
+## Utility functions ----
+
 #' message and print an object to the console for testing
 echo <- function(x) {
   message(deparse(substitute(x)))
   print(x)
 }
-
-# convert temperature C to F
-c_to_f <- function(x) x * 1.8 + 32
 
 # swaps names and values in a list or vector
 invert <- function(x) {
@@ -62,6 +62,20 @@ invert <- function(x) {
   names(y) <- x
   y
 }
+
+
+## Unit conversions ----
+
+# convert temperature C to F
+c_to_f <- function(x) x * 1.8 + 32
+mm_to_in <- function(x) x / 25.4
+cm_to_in <- function(x) x / 2.54
+km_to_mi <- function(x) x / 1.609
+mbar_to_inHg <- function(x) x / 33.864
+
+
+
+## Location helpers ----
 
 #' parse lat/lng coordinates from string
 #' @param str input string containing coordinates to parse in form "lat, lng"
@@ -77,7 +91,6 @@ parse_coords <- function(str) {
   if (any(sapply(coords, is.na))) stop("Failed to parse coordinates.")
   coords
 }
-
 
 #' returns TRUE if location is within service boundary
 #' @param loc list of type { lat: numeric, lng: numeric }
@@ -109,11 +122,13 @@ validate_ll <- function(lat, lng, bounds = OPTS$map_bounds_us) {
 # }
 
 
+
+## IBM API interface ----
+
 #' breaks up longer time periods into 1000 hour chunks
 #' @param start_date date or YYYY-MM-DD string
 #' @param end_date date or YYYY-MM-DD string
 #' @return list of two-element formatted datetime strings
-
 ibm_chunks <- function(start_date, end_date, tz = "UTC") {
   start_dttm <- as_datetime(start_date, tz = tz)
   end_dttm <- as_datetime(end_date, tz = tz) + hours(23)
@@ -128,12 +143,11 @@ ibm_chunks <- function(start_date, end_date, tz = "UTC") {
 
 
 #' Fetch hourly weather data from IBM
+#' API documentation: https://docs.google.com/document/d/13HTLgJDpsb39deFzk_YCQ5GoGoZCO_cRYzIxbwvgJLI/edit?tab=t.0
 #' @param lat latitude of point
 #' @param lng longitude of point
 #' @param start_date date or date string
 #' @param end_date date or date string
-#' @return hourly weather data response as tibble
-#' documentation: https://docs.google.com/document/d/13HTLgJDpsb39deFzk_YCQ5GoGoZCO_cRYzIxbwvgJLI/edit?tab=t.0
 get_ibm <- function(lat, lng, start_date, end_date) {
   stime <- Sys.time()
   tz <- lutz::tz_lookup_coords(lat, lng, warn = F)
@@ -168,20 +182,120 @@ get_ibm <- function(lat, lng, start_date, end_date) {
   weather
 }
 
-ll_to_grid <- function(lat, lon, d = OPTS$grid_dim) {
-  m <- list(rbind(
-    c(lon - d, lat + d),
-    c(lon + d, lat + d),
-    c(lon + d, lat - d),
-    c(lon - d, lat - d),
-    c(lon - d, lat + d)
-  ))
-  st_sfc(st_polygon(m), crs = 4326)
+#' Does some minimal processing on the IBM response to set local time and date
+#' @param ibm_response hourly weather data received from API
+clean_ibm <- function(ibm_response) {
+  ibm_response %>%
+    select(-OPTS$ibm_ignore_cols) %>%
+    select(
+      grid_id = gridpointId,
+      grid_lat = latitude,
+      grid_lng = longitude,
+      datetime_utc = validTimeUtc,
+      everything()
+    ) %>%
+    clean_names() %>%
+    mutate(across(datetime_utc, ~parse_date_time(.x, "YmdHMSz"))) %>%
+    mutate(time_zone = lutz::tz_lookup_coords(grid_lat, grid_lng, warn = F), .after = datetime_utc) %>%
+    mutate(datetime_local = with_tz(datetime_utc, first(time_zone)), .by = time_zone, .after = time_zone) %>%
+    mutate(date = as_date(datetime_local), .after = datetime_local)
 }
 
-build_grids <- function(hourly) {
-  hourly %>%
-    # distinct(grid_id, grid_lat, grid_lng) %>%
+
+## Variable selection and unit conversion features ----
+
+#' all possible, and currently enabled weather columns
+ibm_vars <- c(
+  "temperature",
+  # "temperature_change24hour",
+  # "temperature_max24hour",
+  # "temperature_min24hour",
+  "dew_point" = "temperature_dew_point",
+  # "temperature_feels_like",
+  "relative_humidity",
+  "precip" = "precip1hour",
+  # "precip6hour",
+  # "precip24hour",
+  # "precip2day",
+  # "precip3day",
+  # "precip7day",
+  # "precip_mtd",
+  # "precip_ytd",
+  "snow" = "snow1hour",
+  # "snow6hour",
+  # "snow24hour",
+  # "snow2day",
+  # "snow3day",
+  # "snow7day",
+  # "snow_mtd",
+  # "snow_season",
+  # "snow_ytd",
+  # "uv_index",
+  # "visibility",
+  "wind_speed",
+  # "wind_gust",
+  "wind_direction",
+  "pressure_mean_sea_level",
+  "pressure_change"
+)
+
+#' list of weather variables, unit suffixes, and conversion functions
+#' all derivative columns of each of these will start with the same text
+#' e.g. temperature => temperature_min => temperature_min_30ma
+measures <- tribble(
+  ~measure, ~metric, ~imperial, ~conversion,
+  "temperature", "°C", "°F", c_to_f,
+  "dew_point",   "°C", "°F", c_to_f,
+  "relative_humidity", "%", "%", \(x) x,
+  "precip", "mm", "in", mm_to_in,
+  "snow", "cm", "in", cm_to_in,
+  "wind_speed", "km/hr", "mph", km_to_mi,
+  "wind_direction", "°", "°", \(x) x,
+  "pressure_mean_sea_level", "mbar", "inHg", mbar_to_inHg,
+  "pressure_change", "mbar", "inHg", mbar_to_inHg,
+)
+
+#' converts all measures from default metric to imperial values
+convert_measures <- function(df) {
+  for (i in 1:nrow(measures)) {
+    m <- measures[i,]
+    df <- df %>% mutate(across(starts_with(m$measure), m$conversion[[1]]))
+  }
+  df
+}
+
+#' returns the unit name for the given column
+#' used to append unit suffix in plotly
+find_unit <- function(col_name, unit_system = c("metric", "imperial")) {
+  unit_system <- match.arg(unit_system)
+  matched <- measures %>%
+    rowwise() %>%
+    filter(grepl(measure, col_name))
+  if (nrow(matched) == 1) matched[[unit_system]] else ""
+}
+
+#' adds the unit suffix to each column name where appropriate
+rename_with_units <- function(df, unit_system = c("metric", "imperial")) {
+  unit_system <- match.arg(unit_system)
+  for (i in 1:nrow(measures)) {
+    m <- measures[i,]
+    df <- df %>%
+      rename_with(
+        .fn = ~paste(.x, m[[unit_system]], sep = "_", recycle0 = TRUE),
+        .cols = starts_with(m$measure)
+      )
+  }
+  clean_names(df)
+}
+
+
+## Data pipeline ----
+
+#' summarize downloaded wether data by grid cell and creates sf object
+#' used to intersect site points with existing weather data
+#' @param ibm_hourly hourly weather data from `clean_ibm` function
+build_grids <- function(ibm_hourly) {
+  ibm_hourly %>%
     summarize(
       date_min = min(date),
       date_max = max(date),
@@ -201,87 +315,20 @@ build_grids <- function(hourly) {
     st_set_geometry("geometry")
 }
 
-build_grid_summary <- function(hourly) {
-  hourly %>%
-    summarize(
-      date_min = min(date),
-      date_max = max(date),
-      days_expected = as.integer(max(date) - min(date)) + 1,
-      days_actual = n_distinct(date),
-      days_missing = days_expected - days_actual,
-      days_missing_pct = 100 * days_missing / days_actual,
-      hours_expected = days_expected * 24,
-      hours_actual = n(),
-      hours_missing = hours_expected - hours_actual,
-      hours_missing_pct = 100 * hours_missing / hours_actual,
-      .by = grid_id
-    )
+#' creates an appropriately sized grid cell based on centroid coordinates
+ll_to_grid <- function(lat, lon, d = OPTS$grid_dim) {
+  m <- list(rbind(
+    c(lon - d, lat + d),
+    c(lon + d, lat + d),
+    c(lon + d, lat - d),
+    c(lon - d, lat - d),
+    c(lon - d, lat + d)
+  ))
+  st_sfc(st_polygon(m), crs = 4326)
 }
 
-clean_ibm <- function(ibm_response) {
-  ibm_response %>%
-    select(-OPTS$ibm_ignore_cols) %>%
-    select(
-      grid_id = gridpointId,
-      grid_lat = latitude,
-      grid_lng = longitude,
-      datetime_utc = validTimeUtc,
-      everything()
-    ) %>%
-    clean_names() %>%
-    mutate(across(datetime_utc, ~parse_date_time(.x, "YmdHMSz"))) %>%
-    mutate(time_zone = lutz::tz_lookup_coords(grid_lat, grid_lng, warn = F), .after = datetime_utc) %>%
-    mutate(datetime_local = with_tz(datetime_utc, first(time_zone)), .by = time_zone, .after = time_zone) %>%
-    mutate(date = as_date(datetime_local), .after = datetime_local)
-}
-
-# metric units as indicated below
-ibm_vars <- c(
-  "temperature",
-  # "temperature_change24hour",
-  # "temperature_max24hour",
-  # "temperature_min24hour",
-  "dew_point" = "temperature_dew_point",
-  # "temperature_feels_like",
-  "precip" = "precip1hour",
-  # "precip6hour",
-  # "precip24hour",
-  # "precip2day",
-  # "precip3day",
-  # "precip7day",
-  # "precip_mtd",
-  # "precip_ytd",
-  "pressure_change",
-  "pressure_mean_sea_level",
-  "relative_humidity",
-  "snow" = "snow1hour",
-  # "snow6hour",
-  # "snow24hour",
-  # "snow2day",
-  # "snow3day",
-  # "snow7day",
-  # "snow_mtd",
-  # "snow_season",
-  # "snow_ytd",
-  # "uv_index",
-  # "visibility",
-  "wind_direction",
-  # "wind_gust",
-  "wind_speed"
-)
-
-ibm_units <- c(
-  "temperature" = "°C",
-  "temperature_dew_point" = "°C",
-  "precip" = "mm",
-  "pressure_mean_sea_level" = "mm_Hg",
-  "relative_humidity" = "%",
-  "snow" = "cm",
-  "wind_direction" = "°",
-  "wind_speed" = "km/hr"
-)
-
-# cleaned hourly weather from IBM response
+#' creates the working hourly weather dataset from cleaned ibm response
+#' @param ibm_hourly hourly weather data from `clean_ibm` function
 build_hourly <- function(ibm_hourly) {
   ibm_hourly %>%
     select(
@@ -303,7 +350,6 @@ build_hourly <- function(ibm_hourly) {
 }
 
 # this summarizes based on the "date since night" eg since 8 pm the day before
-daily_attr_cols <- c("grid_id", "grid_lat", "grid_lng", "date", "yday", "year", "month", "day")
 build_daily <- function(hourly) {
   lat_lng <- hourly %>%
     distinct(grid_id, grid_lat, grid_lng)
@@ -337,8 +383,8 @@ build_daily <- function(hourly) {
     summarize(
       hours_rh_over_80_night = sum(night & rh80),
       hours_rh_over_90_night = sum(night & rh90),
-      mean_temp_rh_over_80 = if_else(sum(rh80) > 0, sum(temperature * (rh80)) / sum(rh80), NA),
-      mean_temp_rh_over_90 = if_else(sum(rh90) > 0, sum(temperature * (rh90)) / sum(rh90), NA),
+      temperature_mean_rh_over_80 = if_else(sum(rh80) > 0, sum(temperature * (rh80)) / sum(rh80), NA),
+      temperature_mean_rh_over_90 = if_else(sum(rh90) > 0, sum(temperature * (rh90)) / sum(rh90), NA),
       .by = c(grid_id, date_since_night)
     )
   by_date %>%
@@ -401,8 +447,8 @@ build_disease_from_daily <- function(daily) {
   disease <- daily %>%
     mutate(
       potato_pdays = calculate_pdays(temperature_min, temperature_max),
-      late_blight_dsv = late_blight_dsv(mean_temp_rh_over_90, hours_rh_over_90),
-      carrot_foliar_dsv = carrot_foliar_dsv(mean_temp_rh_over_90, hours_rh_over_90),
+      late_blight_dsv = late_blight_dsv(temperature_mean_rh_over_90, hours_rh_over_90),
+      carrot_foliar_dsv = carrot_foliar_dsv(temperature_mean_rh_over_90, hours_rh_over_90),
       .keep = "none", .by = grid_id
     ) %>%
     mutate(
@@ -660,7 +706,7 @@ OPTS <- lst(
   ),
 
   # dates
-  earliest_date = make_date(2015, 1, 1),
+  earliest_date = make_date(2017, 1, 1),
   default_start_date = today() - 30,
 
   # map
@@ -716,6 +762,11 @@ OPTS <- lst(
   grid_attr_cols = c("grid_id", "grid_lat", "grid_lng", "date_min", "date_max", "days_expected", "days_actual", "days_missing", "days_missing_pct", "hours_expected", "hours_actual", "hours_missing", "hours_missing_pct", "geometry"),
   date_attr_cols = c("datetime_utc", "time_zone", "datetime_local", "date", "yday", "year", "month", "day", "hour", "night", "date_since_night"),
   plot_ignore_cols = c(site_attr_cols, grid_attr_cols, date_attr_cols),
+  plot_axis_font = list(
+    family = "Red Hat Text",
+    size = 14
+  )
+
 )
 
 # cat_names(test_hourly)
@@ -725,7 +776,7 @@ OPTS <- lst(
 
 
 
-# Development ------------------------------------------------------------------
+# Setup ------------------------------------------------------------------------
 
 ## County shapefile ----
 

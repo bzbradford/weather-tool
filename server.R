@@ -271,17 +271,17 @@ server <- function(input, output, session) {
 
   ## date_select_ui // renderUI ----
   output$date_select_ui <- renderUI({
-    today <- Sys.Date()
     dates <- as_date(c(
-      coalesce(input$start_date, OPTS$default_start_date),
-      coalesce(input$end_date, today)
+      coalesce(isolate(input$start_date), OPTS$default_start_date),
+      coalesce(isolate(input$end_date), today())
     ))
+    # print(dates)
     div(
       dateInput(
         inputId = "start_date",
         label = "Start date:",
         min = OPTS$earliest_date,
-        max = today,
+        max = today(),
         value = min(dates),
         width = "100%"
       ),
@@ -289,7 +289,7 @@ server <- function(input, output, session) {
         inputId = "end_date",
         label = "End date:",
         min = OPTS$earliest_date,
-        max = today,
+        max = today(),
         value = max(dates),
         width = "100%"
       )
@@ -722,12 +722,20 @@ server <- function(input, output, session) {
     data <- data %>%
       filter(date >= selected_dates()$start) %>%
       filter(date <= selected_dates()$end)
-    sites %>%
+    df <- sites %>%
       left_join(data, join_by(grid_id)) %>%
       drop_na(grid_id, date) %>%
       select(-grid_id) %>%
       rename(all_of(site_attr)) %>%
       mutate(across(where(is.numeric), ~signif(.x)))
+    if (input$metric) df else convert_measures(df)
+  })
+
+  download_data <- reactive({
+    selected_data() %>%
+      rename_with_units() %>%
+      mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character)) %>%
+      clean_names("big_camel")
   })
 
   observe({
@@ -758,7 +766,8 @@ server <- function(input, output, session) {
   ## data_ui // renderUI ----
   output$data_ui <- renderUI({
     tagList(
-      p(em("Currently no unit conversion is available. Temperature and dew point: Celsius (°C), precipitation (rain/melted snow): millimeters (mm), snow accumulation: centimeters (cm), relative humidity: %, pressure: millimeters mercury (mmHg), wind speed: kilometers/hour (km/hr), wind direction: compass degrees (N=0°, E=90°, etc.). Growing degree day base/upper thresholds and accumulations in Fahrenheit.")),
+      p(em("Most values may be shown in either metric or imperial units. Temperature and dew point: °C or °F, precipitation (rain/melted snow): mm or in, snow accumulation: cm or in, relative humidity: %, pressure: mbar or inHg, wind speed: km/hr or mph, wind direction: compass degrees (N=0°, E=90°, etc.). Growing degree day base/upper thresholds and accumulations always in Fahrenheit.")),
+      materialSwitch("metric", "Use metric", value = TRUE, status = "primary"),
       radioGroupButtons(
         "data_type",
         label = "Dataset",
@@ -876,6 +885,7 @@ server <- function(input, output, session) {
     df <- selected_data()
     opts <- list(
       cols = req(input$plot_cols),
+      unit_system = ifelse(input$metric, "metric", "imperial"),
       mode = ifelse(nrow(df) <= 100, "lines+markers", "lines"),
       linewidth = ifelse(nrow(df) <= 500, 2, 1),
       site_ids = unique(df$site_id),
@@ -913,12 +923,18 @@ server <- function(input, output, session) {
         margin = list(t = 50, r = 50),
         legend = list(orientation = "h"),
         yaxis = list(
-          title = y1_title
+          title = list(
+            text = str_wrap(y1_title, 40),
+            font = OPTS$plot_axis_font
+          )
         ),
         yaxis2 = list(
-          title = y2_title,
           overlaying = "y",
-          side = "right"
+          side = "right",
+          title = list(
+            text = str_wrap(y2_title, 40),
+            font = OPTS$plot_axis_font
+          )
         )
       )
 
@@ -930,7 +946,8 @@ server <- function(input, output, session) {
         add_trace(
           plt, x = x, y = signif(y),
           name = name, type = "scatter", mode = opts$mode,
-          yaxis = col_axis, hovertemplate = "%{y:%s}",
+          yaxis = col_axis,
+          hovertemplate = paste0("%{y:%s}", find_unit(col, opts$unit_system)),
           line = list(shape = "spline", width = opts$linewidth)
         )
       }
@@ -980,10 +997,7 @@ server <- function(input, output, session) {
       paste0(name, " data ", dates$start, " - ", dates$end, ".csv")
     },
     content = function(file) {
-      selected_data() %>%
-        mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character)) %>%
-        clean_names("big_camel") %>%
-        write_excel_csv(file, na = "")
+      download_data() %>% write_excel_csv(file, na = "")
     }
   )
 
