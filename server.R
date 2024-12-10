@@ -49,17 +49,25 @@ server <- function(input, output, session) {
     # both must be true to show data display
     sites_ready = FALSE,
     weather_ready = FALSE,
+
+    start_date = NULL,
+    end_date = NULL,
   )
 
   ## selected_dates ----
-  selected_dates <- reactive({
+  observe({
     start <- req(input$start_date)
     end <- req(input$end_date)
     req(start <= end)
+    rv$status_msg <- NULL
+    rv$start_date <- start
+    rv$end_date <- end
+  })
 
+  selected_dates <- reactive({
     list(
-      start = start,
-      end = end
+      start = req(rv$start_date),
+      end = req(rv$end_date)
     )
   })
 
@@ -91,7 +99,6 @@ server <- function(input, output, session) {
     weather <- req(rv$weather) %>%
       filter(grid_id %in% sites_with_grid()$grid_id) %>%
       filter(between(date, selected_dates()$start, selected_dates()$end))
-    req(nrow(weather) > 0)
     weather %>% build_hourly()
   })
 
@@ -102,21 +109,24 @@ server <- function(input, output, session) {
       st_set_geometry(NULL)
   })
 
-  ## wx_daily ----
+  ## wx_daily // daily summary ----
   wx_daily <- reactive({
     wx_hourly() %>% build_daily()
   })
 
-  ## wx_ma ----
-  # moving averages
+  ## wx_ma // moving averages ----
   wx_ma <- reactive({
     wx_daily() %>% build_ma()
   })
 
+  ## wx_disease // disease models ----
   wx_disease <- reactive({
+    attr <- wx_daily() %>% select(any_of(OPTS$date_attr_cols), grid_id)
     d1 <- wx_ma() %>% build_disease_from_ma()
     d2 <- wx_daily() %>% build_disease_from_daily()
-    left_join(d1, d2, join_by(grid_id, date))
+    attr %>%
+      left_join(d1, join_by(grid_id, date)) %>%
+      left_join(d2, join_by(grid_id, date))
   })
 
   wx_gdd <- reactive({
@@ -271,18 +281,13 @@ server <- function(input, output, session) {
 
   ## date_select_ui // renderUI ----
   output$date_select_ui <- renderUI({
-    dates <- as_date(c(
-      coalesce(isolate(input$start_date), OPTS$default_start_date),
-      coalesce(isolate(input$end_date), today())
-    ))
-    # print(dates)
     div(
       dateInput(
         inputId = "start_date",
         label = "Start date:",
         min = OPTS$earliest_date,
         max = today(),
-        value = min(dates),
+        value = OPTS$default_start_date,
         width = "100%"
       ),
       dateInput(
@@ -290,7 +295,7 @@ server <- function(input, output, session) {
         label = "End date:",
         min = OPTS$earliest_date,
         max = today(),
-        value = max(dates),
+        value = today(),
         width = "100%"
       )
     )
@@ -335,14 +340,27 @@ server <- function(input, output, session) {
   output$action_ui <- renderUI({
     btn <- function(msg, ...) actionButton("get", msg, ...)
     sites <- sites_df()
+    opts <- list(start_date = input$start_date, end_date = input$end_date)
+    dates_valid <- FALSE
+    if (isTruthy(opts$start_date) && isTruthy(opts$end_date)) {
+      if (opts$start_date <= opts$end_date) dates_valid <- TRUE
+    }
     div(
       class = "submit-btn",
       if (nrow(sites) == 0) {
         btn("No sites selected", disabled = TRUE)
+      } else if (!dates_valid) {
+        btn("Invalid date selection", disabled = TRUE)
       } else {
         btn("Fetch weather")
-      }
+      },
+      uiOutput("status_ui")
     )
+  })
+
+  output$status_ui <- renderUI({
+    msg <- req(rv$status_msg)
+    div(class = "shiny-output-error", style = "margin-top: 10px;", msg)
   })
 
   ## Handle fetching ----
@@ -351,6 +369,7 @@ server <- function(input, output, session) {
     wx <- as_tibble(rv$weather)
     dates_need <- seq.Date(selected_dates()$start, selected_dates()$end, 1)
     disable("get")
+    rv$status_msg <- NULL
 
     # for each site download necessary weather data
     for (i in 1:nrow(sites)) {
@@ -374,6 +393,10 @@ server <- function(input, output, session) {
       # get weather if needed
       if (length(dates) > 0) {
         resp <- get_ibm(site$lat, site$lng, first(dates) - 1, last(dates) + 1)
+        if (nrow(resp) == 0) {
+          rv$status_msg <- sprintf("Unable to get some/all weather for %.2f, %.2f from %s to %s.", site$lat, site$lng, first(dates), last(dates))
+          next
+        }
         new_wx <- clean_ibm(resp)
         wx <- bind_rows(wx, new_wx) %>%
           distinct(grid_id, datetime_utc, .keep_all = T)
@@ -708,9 +731,17 @@ server <- function(input, output, session) {
 
   ## selected_data // reactive ----
   selected_data <- reactive({
-    sites <- sites_with_grid() %>%
-      select(id, name, lat, lng, grid_id)
     type <- req(input$data_type)
+
+    sites <- sites_with_grid() %>%
+      select(
+        site_id = id,
+        site_name = name,
+        site_lat = lat,
+        site_lng = lng,
+        grid_id
+      )
+
     data <- switch(
       req(input$data_type),
       "hourly" = wx_hourly(),
@@ -719,15 +750,17 @@ server <- function(input, output, session) {
       "disease" = wx_disease(),
       "gdd" = wx_gdd()
     )
+
     data <- data %>%
       filter(date >= selected_dates()$start) %>%
       filter(date <= selected_dates()$end)
+
     df <- sites %>%
       left_join(data, join_by(grid_id)) %>%
       drop_na(grid_id, date) %>%
       select(-grid_id) %>%
-      rename(all_of(site_attr)) %>%
       mutate(across(where(is.numeric), ~signif(.x)))
+
     if (input$metric) df else convert_measures(df)
   })
 
@@ -748,20 +781,14 @@ server <- function(input, output, session) {
     if (rv$weather_ready != wr) rv$weather_ready <- wr
   })
 
-  site_attr <- {
-    cols <- c("id", "name", "lat", "lng")
-    names(cols) <- paste0("site_", cols)
-    cols
-  }
-
-  format_dt <- function(df) {
-    df %>%
-      rename(all_of(site_attr)) %>%
-      mutate(across(where(is.numeric), ~signif(.x))) %>%
-      mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character)) %>%
-      select(-grid_id) %>%
-      clean_names("big_camel")
-  }
+  # format_dt <- function(df) {
+  #   df %>%
+  #     rename(all_of(site_attr)) %>%
+  #     mutate(across(where(is.numeric), ~signif(.x))) %>%
+  #     mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character)) %>%
+  #     select(-grid_id) %>%
+  #     clean_names("big_camel")
+  # }
 
   ## data_ui // renderUI ----
   output$data_ui <- renderUI({
@@ -831,7 +858,6 @@ server <- function(input, output, session) {
 
   ## plot_cols // reactive ----
   plot_cols <- reactive({
-    # cols <- OPTS$plot_cols[[req(input$data_type)]]
     cols <- names(selected_data())
     cols <- cols[!(cols %in% OPTS$plot_ignore_cols)]
     set_names(cols, make_clean_names(cols, "title"))
@@ -840,11 +866,9 @@ server <- function(input, output, session) {
   ## plot_cols // renderUI ----
   output$plot_cols <- renderUI({
     cols <- plot_cols()
-    prev_selection <- if (isTruthy(isolate(input$plot_cols))) {
-      intersect(input$plot_cols, cols)
-    }
+    prev_selection <- intersect(input$plot_cols, cols)
+    default_selection <- intersect(cols, OPTS$plot_default_cols)
     div(
-      # tags$label("Weather parameters"),
       div(
         class = "flex-across",
         div(
@@ -853,7 +877,7 @@ server <- function(input, output, session) {
             inputId = "plot_cols",
             label = NULL,
             choices = cols,
-            selected = coalesce(prev_selection, cols[1]),
+            selected = first_truthy(prev_selection, default_selection, cols[1]),
             multiple = TRUE,
             options = list(plugins = list("remove_button"))
           )

@@ -63,6 +63,11 @@ invert <- function(x) {
   y
 }
 
+first_truthy <- function(...) {
+  for (arg in list(...)) if (shiny::isTruthy(arg)) return(arg)
+  NULL
+}
+
 
 ## Unit conversions ----
 
@@ -168,7 +173,7 @@ get_ibm <- function(lat, lng, start_date, end_date) {
     if (resp$status == 200) {
       as_tibble(resp_body_json(resp, simplifyVector = T))
     } else {
-      message("Received status ", resp$status, " with message ", resp$message)
+      message("Received status ", resp$status, " with message ", resp_status_desc(resp))
       tibble()
     }
   })
@@ -185,6 +190,7 @@ get_ibm <- function(lat, lng, start_date, end_date) {
 #' Does some minimal processing on the IBM response to set local time and date
 #' @param ibm_response hourly weather data received from API
 clean_ibm <- function(ibm_response) {
+  if (nrow(ibm_response) == 0) return(tibble())
   ibm_response %>%
     select(-OPTS$ibm_ignore_cols) %>%
     select(
@@ -399,7 +405,7 @@ roll_mean <- function(vec, width) {
 }
 
 build_ma <- function(daily) {
-  attr <- daily %>% select(grid_id, date)
+  attr <- daily %>% select(grid_id, any_of(OPTS$date_attr_cols))
   ma <- daily %>%
     mutate(
       across(
@@ -479,8 +485,6 @@ build_gdd <- function(daily) {
     mutate(across(starts_with("base_"), c(cumulative = cumsum)), .by = grid_id) %>%
     select(
       all_of(names(attr)),
-      "base_50_upper_86_cumulative",
-      starts_with("base_50"),
       all_of(sort(names(.)))
     )
 }
@@ -757,10 +761,19 @@ OPTS <- lst(
     "Growing degree days" = "gdd"
   ),
 
+  # add site_ before some columns in the sites table
+  site_attr_rename = {
+    cols <- c("id", "name", "lat", "lng")
+    names(cols) <- paste0("site_", cols)
+    cols
+  },
+
   # plotting
   site_attr_cols = c("site_id", "site_name", "site_lat", "site_lng", "temp"),
   grid_attr_cols = c("grid_id", "grid_lat", "grid_lng", "date_min", "date_max", "days_expected", "days_actual", "days_missing", "days_missing_pct", "hours_expected", "hours_actual", "hours_missing", "hours_missing_pct", "geometry"),
   date_attr_cols = c("datetime_utc", "time_zone", "datetime_local", "date", "yday", "year", "month", "day", "hour", "night", "date_since_night"),
+  daily_attr_cols = c("date", "yday", "year", "month", "day"),
+  plot_default_cols = c("temperature", "temperature_mean", "temperature_mean_30day", "base_50_upper_86_cumulative"),
   plot_ignore_cols = c(site_attr_cols, grid_attr_cols, date_attr_cols),
   plot_axis_font = list(
     family = "Red Hat Text",
