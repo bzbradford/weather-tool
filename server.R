@@ -866,7 +866,7 @@ server <- function(input, output, session) {
   ## plot_cols // renderUI ----
   output$plot_cols <- renderUI({
     cols <- plot_cols()
-    prev_selection <- intersect(input$plot_cols, cols)
+    prev_selection <- sort(intersect(isolate(input$plot_cols), cols))
     default_selection <- intersect(cols, OPTS$plot_default_cols)
     div(
       div(

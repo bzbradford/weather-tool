@@ -352,7 +352,8 @@ build_hourly <- function(ibm_hourly) {
       date_since_night = as_date(datetime_local + hours(4)),
       .after = date,
     ) %>%
-    arrange(grid_lat, grid_lng, datetime_utc)
+    arrange(grid_lat, grid_lng, datetime_utc) %>%
+    mutate(dew_point_depression = abs(temperature - dew_point), .after = dew_point)
 }
 
 # this summarizes based on the "date since night" eg since 8 pm the day before
