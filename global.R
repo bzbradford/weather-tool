@@ -166,26 +166,25 @@ get_ibm <- function(lat, lng, start_date, end_date) {
         endDateTime = dates[2],
         units = "m",
         apiKey = OPTS$ibm_key
-      )
+      ) %>%
+      req_timeout(10)
   })
   resps <- req_perform_parallel(reqs, on_error = "continue", progress = F)
   responses <- lapply(resps, function(resp) {
-    if (resp$status == 200) {
-      as_tibble(resp_body_json(resp, simplifyVector = T))
-    } else {
-      message("Received status ", resp$status, " with message ", resp_status_desc(resp))
-      tibble()
-    }
+    tryCatch({
+      if (resp_status(resp) != 200) {
+        message("Received status ", resp_status(resp), " with message ", resp_status_desc(resp))
+        stop()
+      }
+      resp_body_json(resp, simplifyVector = T) %>% as_tibble()
+    }, error = function(e) return(tibble()))
   })
   weather <- bind_rows(responses)
   msg <- str_glue("weather for {lat}, {lng} from {start_date} to {end_date} in {Sys.time() - stime}")
-  if (nrow(weather) > 0) {
-    message("OK ==> Got ", msg)
-  } else {
-    message("FAIL ==> Could not get ", msg)
-  }
+  message(ifelse(nrow(weather) > 0, "OK ==> Got ", "FAIL ==> Could not get "), msg)
   weather
 }
+
 
 #' Does some minimal processing on the IBM response to set local time and date
 #' @param ibm_response hourly weather data received from API
@@ -401,23 +400,22 @@ build_daily <- function(hourly) {
     arrange(grid_id, date)
 }
 
-roll_mean <- function(vec, width) {
-  zoo::rollapply(vec, width, \(x) mean(x, na.rm = T), fill = NA, partial = T)
-}
 
-build_ma <- function(daily) {
+build_ma_from_daily <- function(daily, align = c("center", "right")) {
+  align <- match.arg(align)
+  roll_mean <- function(vec, width) {
+    zoo::rollapply(vec, width, \(x) mean(x, na.rm = T), fill = NA, partial = T, align = align)
+  }
   attr <- daily %>% select(grid_id, any_of(OPTS$date_attr_cols))
+  fns <- c(
+    "7day" = ~roll_mean(.x, 7),
+    "14day" = ~roll_mean(.x, 14),
+    "21day" = ~roll_mean(.x, 21),
+    "30day" = ~roll_mean(.x, 30)
+  )
   ma <- daily %>%
     mutate(
-      across(
-        starts_with(c("temperature", "dew_point", "relative_humidity", "pressure", "wind", "hours")),
-        c(
-          "30day" = ~roll_mean(.x, 30),
-          "21day" = ~roll_mean(.x, 21),
-          "14day" = ~roll_mean(.x, 14),
-          "7day" = ~roll_mean(.x, 7)
-        )
-      ),
+      across(starts_with(c("temperature", "dew_point", "relative_humidity", "pressure", "wind", "hours")), fns),
       .keep = "none"
     )
   bind_cols(attr, ma)
@@ -471,7 +469,7 @@ build_disease_from_daily <- function(daily) {
 }
 
 # input temperatures must be Celsius and will be converted to Fahrenheit GDDs
-build_gdd <- function(daily) {
+build_gdd_from_daily <- function(daily) {
   attr <- daily %>% select(grid_id, date)
   tmin <- c_to_f(daily$temperature_min)
   tmax <- c_to_f(daily$temperature_max)
@@ -711,7 +709,7 @@ OPTS <- lst(
   ),
 
   # dates
-  earliest_date = make_date(2017, 1, 1),
+  earliest_date = make_date(2015, 1, 1),
   default_start_date = today() - 30,
 
   # map
@@ -758,8 +756,8 @@ OPTS <- lst(
     "Hourly" = "hourly",
     "Daily" = "daily",
     "Moving averages" = "ma",
-    "Disease risk" = "disease",
-    "Growing degree days" = "gdd"
+    "Growing degree days" = "gdd",
+    "Disease models" = "disease"
   ),
 
   # add site_ before some columns in the sites table
@@ -774,7 +772,7 @@ OPTS <- lst(
   grid_attr_cols = c("grid_id", "grid_lat", "grid_lng", "date_min", "date_max", "days_expected", "days_actual", "days_missing", "days_missing_pct", "hours_expected", "hours_actual", "hours_missing", "hours_missing_pct", "geometry"),
   date_attr_cols = c("datetime_utc", "time_zone", "datetime_local", "date", "yday", "year", "month", "day", "hour", "night", "date_since_night"),
   daily_attr_cols = c("date", "yday", "year", "month", "day"),
-  plot_default_cols = c("temperature", "temperature_mean", "temperature_mean_30day", "base_50_upper_86_cumulative"),
+  plot_default_cols = c("temperature", "temperature_mean", "temperature_mean_7day", "base_50_upper_86_cumulative"),
   plot_ignore_cols = c(site_attr_cols, grid_attr_cols, date_attr_cols),
   plot_axis_font = list(
     family = "Red Hat Text",

@@ -111,26 +111,29 @@ server <- function(input, output, session) {
 
   ## wx_daily // daily summary ----
   wx_daily <- reactive({
-    wx_hourly() %>% build_daily()
+    build_daily(wx_hourly())
   })
 
   ## wx_ma // moving averages ----
   wx_ma <- reactive({
-    wx_daily() %>% build_ma()
+    align <- req(input$ma_align)
+    build_ma_from_daily(wx_daily(), align)
   })
 
   ## wx_disease // disease models ----
   wx_disease <- reactive({
-    attr <- wx_daily() %>% select(any_of(OPTS$date_attr_cols), grid_id)
-    d1 <- wx_ma() %>% build_disease_from_ma()
-    d2 <- wx_daily() %>% build_disease_from_daily()
+    daily <- wx_daily()
+    ma <- build_ma_from_daily(daily, align = "right")
+    attr <- daily %>% select(any_of(OPTS$date_attr_cols), grid_id)
+    d1 <- build_disease_from_ma(ma)
+    d2 <- build_disease_from_daily(daily)
     attr %>%
       left_join(d1, join_by(grid_id, date)) %>%
       left_join(d2, join_by(grid_id, date))
   })
 
   wx_gdd <- reactive({
-    wx_daily() %>% build_gdd()
+    build_gdd_from_daily(wx_daily())
   })
 
 
@@ -140,8 +143,7 @@ server <- function(input, output, session) {
   observe({
     mod <- modalDialog(
       title = OPTS$app_title,
-      p("Use this tool to easily download hourly weather data for any point in the continental United States. Weather data is provided by a subscription to IBM's weather service, which powers The Weather Channel among others. From this hourly weather data, we compute daily values, moving averages, plant disease risk values, and growing degree days."),
-      p("Additonal information will be added here when available. This tool is currently under development."),
+      includeMarkdown("about.md"),
       footer = modalButton("Close"),
       easyClose = TRUE
     )
@@ -360,7 +362,7 @@ server <- function(input, output, session) {
 
   output$status_ui <- renderUI({
     msg <- req(rv$status_msg)
-    div(class = "shiny-output-error", style = "margin-top: 10px;", msg)
+    div(class = msg$class, style = "margin-top: 5px; padding: 10px;", msg$text)
   })
 
   ## Handle fetching ----
@@ -369,42 +371,53 @@ server <- function(input, output, session) {
     wx <- as_tibble(rv$weather)
     dates_need <- seq.Date(selected_dates()$start, selected_dates()$end, 1)
     disable("get")
-    rv$status_msg <- NULL
+    runjs("$('#get').html('Downloading weather...')")
 
     # for each site download necessary weather data
-    for (i in 1:nrow(sites)) {
-      site <- sites[i,]
+    withProgress(
+      message = "Downloading weather...",
+      value = 0, min = 0, max = nrow(sites),
+      {
+        for (i in 1:nrow(sites)) {
+          site <- sites[i,]
 
-      # already have some weather?
-      if (nrow(wx) > 0) {
-        grids <- build_grids(wx)
-        grid_dates <- wx %>%
-          summarize(hours = n(), .by = c(grid_id, date)) %>%
-          filter(hours > 12)
-        dates_have <- site %>%
-          st_join(grids) %>%
-          left_join(grid_dates, join_by(grid_id)) %>%
-          pull(date)
-        dates <- as_date(setdiff(dates_need, dates_have))
-      } else {
-        dates <- dates_need
-      }
+          # already have some weather?
+          if (nrow(wx) > 0) {
+            grids <- build_grids(wx)
+            grid_dates <- wx %>%
+              summarize(hours = n(), .by = c(grid_id, date)) %>%
+              filter(hours > 12)
+            dates_have <- site %>%
+              st_join(grids) %>%
+              left_join(grid_dates, join_by(grid_id)) %>%
+              pull(date)
+            dates <- as_date(setdiff(dates_need, dates_have))
+          } else {
+            dates <- dates_need
+          }
 
-      # get weather if needed
-      if (length(dates) > 0) {
-        resp <- get_ibm(site$lat, site$lng, first(dates) - 1, last(dates) + 1)
-        if (nrow(resp) == 0) {
-          rv$status_msg <- sprintf("Unable to get some/all weather for %.2f, %.2f from %s to %s.", site$lat, site$lng, first(dates), last(dates))
-          next
+          # get weather if needed
+          if (length(dates) > 0) {
+            resp <- get_ibm(site$lat, site$lng, first(dates) - 1, last(dates) + 1)
+            incProgress(1)
+            if (nrow(resp) == 0) {
+              rv$status_msg <- list(
+                class = "shiny-output-error",
+                text = sprintf("Unable to get some/all weather for %.2f, %.2f from %s to %s.", site$lat, site$lng, first(dates), last(dates))
+              )
+              next
+            }
+            new_wx <- clean_ibm(resp)
+            wx <- bind_rows(wx, new_wx) %>%
+              distinct(grid_id, datetime_utc, .keep_all = T)
+          }
         }
-        new_wx <- clean_ibm(resp)
-        wx <- bind_rows(wx, new_wx) %>%
-          distinct(grid_id, datetime_utc, .keep_all = T)
       }
-    }
+    )
 
     rv$weather <- wx
     write_fst(wx, "saved_weather.fst", compress = 90)
+    runjs("$('#get').html('Fetch weather')")
     enable("get")
   }) %>%
     bindEvent(input$get)
@@ -800,6 +813,7 @@ server <- function(input, output, session) {
         label = "Dataset",
         choices = OPTS$data_type_choices
       ),
+      uiOutput("data_options"),
       uiOutput("dataset_ui")
     )
   })
@@ -814,6 +828,23 @@ server <- function(input, output, session) {
       h4("Data chart"),
       uiOutput("plot_ui"),
       downloadButton("download_data", "Download dataset")
+    )
+  })
+
+  ## data_options // renderUI ----
+  output$data_options <- renderUI({
+    type <- req(input$data_type)
+    req(type == "ma")
+    div(
+      class = "flex-across",
+      div(tags$label("Moving average type:")),
+      radioButtons(
+        inputId = "ma_align",
+        label = NULL,
+        choices = c("Centered" = "center", "Trailing" = "right"),
+        selected = isolate(input$ma_align),
+        inline = TRUE
+      )
     )
   })
 
@@ -866,7 +897,7 @@ server <- function(input, output, session) {
   ## plot_cols // renderUI ----
   output$plot_cols <- renderUI({
     cols <- plot_cols()
-    prev_selection <- sort(intersect(isolate(input$plot_cols), cols))
+    prev_selection <- intersect(cols, isolate(input$plot_cols))
     default_selection <- intersect(cols, OPTS$plot_default_cols)
     div(
       div(

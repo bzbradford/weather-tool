@@ -9,11 +9,10 @@ ui <- fluidPage(
     tags$meta(name = "keywords", content = "uw, wisconsin, weather, tool"),
     tags$link(rel = "preload", href = "https://cdn.wisc.cloud/fonts/uw-rh/0.0.1/redhat-display-latin.v14.woff2", as = "font", type = "font/woff2"),
     tags$link(rel = "preload", href = "https://cdn.wisc.cloud/fonts/uw-rh/0.0.1/redhat-text-latin.v13.woff2", as = "font", type = "font/woff2"),
-    # tags$link(rel = "shortcut icon", href = "favicon-32x32.png"),
     tags$link(rel = "shortcut icon", href = "uw-crest.svg"),
     tags$link(rel = "stylesheet", type = "text/css", href = "style.css"),
     tags$script(src = "script.js"),
-    # includeHTML("www/google-analytics.html"),
+    includeHTML("www/google-analytics.html"),
     useShinyjs()
   ),
   tags$header(

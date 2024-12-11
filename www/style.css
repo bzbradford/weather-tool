@@ -205,6 +205,15 @@ table {
   color: white;
 }
 
+#shiny-notification-panel {
+  left: 0;
+  right: unset;
+}
+
+.modal-title {
+  font-weight: bold;
+}
+
 
 /*--- LEAFLET ---*/
 
