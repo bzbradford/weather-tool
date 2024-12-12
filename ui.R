@@ -51,7 +51,7 @@ ui <- fluidPage(
       a("Ben Bradford", href = "https://entomology.wisc.edu/directory/ben-bradford/", target = "_blank", .noWS = "after"),
       ", UW-Madison Entomology",
       br(),
-      a("View source code", href = "https://github.com/bzbradford/weather-tool", target = "_blank", .noWS = "after"), "."
+      a("View source code", href = "https://github.com/bzbradford/weather-tool", target = "_blank", .noWS = "after"),
     )
   )
 )

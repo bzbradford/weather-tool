@@ -6,7 +6,11 @@ server <- function(input, output, session) {
   # try to enforce site attributes
   create_site <- function(loc) {
     sites <- rv$sites
-    loc$id <- ifelse(nrow(sites) > 0, max(sites$id) + 1, 1)
+    loc$id <- if (is.numeric(sites$id)) {
+      ifelse(nrow(sites) > 0, max(sites$id) + 1, 1)
+    } else {
+      "temp"
+    }
     loc$temp <- !isTruthy(loc$temp)
 
     # make sure it has all the attributes
@@ -19,6 +23,7 @@ server <- function(input, output, session) {
   }
 
   save_site <- function(site) {
+    if (nrow(rv$sites) == OPTS$max_sites) return()
     sites <- rv$sites %>%
       filter(!temp) %>%
       bind_rows(as_tibble(site)) %>%
@@ -160,11 +165,11 @@ server <- function(input, output, session) {
         class = "flex-down",
         p(em("Load or queue up multiple sites. A clicked or searched location must be clicked again to save it to the list.")),
         uiOutput("temp_site_ui"),
-        tags$label("Saved sites:"),
+        tags$label("Sites list:"),
         uiOutput("sites_tbl"),
         div(
           class = "flex-across",
-          btn("load_example", "Test sites"),
+          # btn("load_example", "Test sites"),
           btn("upload_csv", "Upload csv"),
           btn("clear_sites", "Clear sites")
         ),
@@ -199,7 +204,7 @@ server <- function(input, output, session) {
   output$sites_tbl <- renderTable({
     sites <- sites_df()
     if (input$multi_site) sites <- sites %>% filter(!temp)
-    validate(need(nrow(sites) > 0, "No saved sites. Load a list of sites, or click on a temporary site to save it."))
+    validate(need(nrow(sites) > 0, "No sites in list. Load a list of sites, or click on a temporary site icon to save it to the list."))
     sites %>%
       select(id, name, lat, lng) %>%
       clean_names("title")
@@ -210,7 +215,7 @@ server <- function(input, output, session) {
     req(rv$show_upload)
     div(
       tags$label("Upload csv"), br(),
-      em("Upload a csv with three columns: name/location, lat/latitude, lng/long/longitude. Latitude and longitude must be in +/- decimal degrees. Maximum of 10 sites."),
+      em("Upload a csv with columns: name/location, lat/latitude, lng/long/longitude. Latitude and longitude must be in +/- decimal degrees. Optional ID column is allowed. Maximum of 10 sites."),
       fileInput(
         inputId = "sites_csv",
         label = NULL,
@@ -227,42 +232,48 @@ server <- function(input, output, session) {
   }) %>% bindEvent(input$upload_csv)
 
   # try read sites from csv. max 100 sites
-  load_sites <- function(df) {
+  load_sites <- function(fpath) {
+    df <- read_csv(fpath, col_types = "c", show_col_types = F)
+    # df <- read_csv(fpath, show_col_types = F)
+    stopifnot("File was empty" = {nrow(df) > 0})
     df <- df %>%
       clean_names() %>%
       select(any_of(OPTS$site_cols)) %>%
       drop_na()
     req(c("name", "lat", "lng") %in% names(df))
+    df <- df %>% filter(validate_ll(lat, lng))
+    stopifnot("No valid locations within service area" = {nrow(df) > 0})
+    if ("id" %in% names(df)) {
+      stopifnot("Given id column does not contain unique values" = {length(unique(df$id)) == nrow(df)})
+    } else {
+      df <- df %>% mutate(id = row_number(), .before = 1)
+    }
     df <- df %>%
-      filter(validate_ll(lat, lng)) %>%
-      mutate(id = row_number(), .before = 1) %>%
       mutate(temp = FALSE) %>%
-      head(10)
-    req(nrow(df) > 0)
-    rv$selected_site <- 1
+      head(OPTS$max_sites)
+
+    rv$selected_site <- first(df$id)
     df
   }
 
   observe({
     upload <- req(input$sites_csv)
     tryCatch({
-      rv$sites <- upload$datapath %>%
-        read_csv(show_col_types = F) %>%
-        load_sites()
+      rv$sites <- load_sites(upload$datapath)
       fit_sites()
       rv$show_upload <- FALSE
       rv$upload_msg <- NULL
     }, error = function(e) {
+      message("File upload error: ", e)
       rv$upload_msg = "Failed to load sites from csv, please try again."
     })
-  })
+  }) %>% bindEvent(input$sites_csv)
 
   ## Handle test site load ----
-  observe({
-    rv$sites <- read_csv("data/example-sites.csv", show_col_types = F) %>%
-      load_sites()
-    fit_sites()
-  }) %>% bindEvent(input$load_example)
+  # observe({
+  #   rv$sites <- load_sites("example-sites.csv")
+  #   fit_sites()
+  # }) %>% bindEvent(input$load_example)
 
   ## Handle clear sites button ----
   observe({
@@ -575,6 +586,7 @@ server <- function(input, output, session) {
         )
     } else {
       sites_with_grid() %>%
+        mutate(icon_num = as.character(row_number()) %>% substr(nchar(.), nchar(.))) %>%
         mutate(
           icon = case_when(
             input$multi_site & temp ~ "plus",
@@ -582,7 +594,7 @@ server <- function(input, output, session) {
               selected_dates()$end > date_max |
               is.na(days_missing) |
               days_missing > 0 ~ "download",
-            input$multi_site & !temp ~ as.character(id),
+            input$multi_site & !temp ~ icon_num,
             T ~ "check")
         )
     }
@@ -595,7 +607,7 @@ server <- function(input, output, session) {
         marker_color = if_else(id == rv$selected_site, "red", "blue"),
         label = paste0(
           "<b>Site ", id, ": ", name, "</b><br>",
-          sprintf("%.4f, %.4f", lat, lng), "<br>",
+          sprintf("%.3f°N, %.3f°W", lat, lng), "<br>",
           if_else(icon == "download", "Download required", "Data ready"),
           if_else(input$multi_site & id == rv$selected_site, "<br>Selected", ""),
           if_else(input$multi_site & temp, "<br>Temporary site", "")
@@ -777,6 +789,7 @@ server <- function(input, output, session) {
     if (input$metric) df else convert_measures(df)
   })
 
+  ## download_data // reactive ----
   download_data <- reactive({
     selected_data() %>%
       rename_with_units() %>%
@@ -784,6 +797,25 @@ server <- function(input, output, session) {
       clean_names("big_camel")
   })
 
+  ## download_filename // reactive ----
+  # for both the csv download and plot png export
+  download_filename <- reactive({
+    type <- req(input$data_type)
+    data_name <- invert(OPTS$data_type_choices)[[type]]
+    site_name <- if (input$multi_site) {
+      "(multiple locations)"
+    } else {
+      site <- first(sites_df())
+      sprintf("(%.3f, %.3f)", site$lat, site$lng)
+    }
+    dates <- paste(selected_dates()$start, "to", selected_dates()$end)
+    list(
+      csv = paste(data_name, "data", site_name, "-", dates),
+      plot = paste(data_name, "plot", site_name, "-", dates)
+    )
+  })
+
+  ## control if the data view is ready ----
   observe({
     sr <- nrow(sites_df()) > 0
     if (rv$sites_ready != sr) rv$sites_ready <- sr
@@ -793,15 +825,6 @@ server <- function(input, output, session) {
     wr <- nrow(selected_data()) > 0
     if (rv$weather_ready != wr) rv$weather_ready <- wr
   })
-
-  # format_dt <- function(df) {
-  #   df %>%
-  #     rename(all_of(site_attr)) %>%
-  #     mutate(across(where(is.numeric), ~signif(.x))) %>%
-  #     mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character)) %>%
-  #     select(-grid_id) %>%
-  #     clean_names("big_camel")
-  # }
 
   ## data_ui // renderUI ----
   output$data_ui <- renderUI({
@@ -938,18 +961,44 @@ server <- function(input, output, session) {
   ## data_plot // renderPlotly ----
   output$data_plot <- renderPlotly({
     df <- selected_data()
-    opts <- list(
+    sites <- sites_df()
+    opts <- lst(
+      data_type = req(input$data_type),
+      data_name = invert(OPTS$data_type_choices)[[data_type]],
       cols = req(input$plot_cols),
       unit_system = ifelse(input$metric, "metric", "imperial"),
-      mode = ifelse(nrow(df) <= 100, "lines+markers", "lines"),
-      linewidth = ifelse(nrow(df) <= 500, 2, 1),
       site_ids = unique(df$site_id),
-      selected_ids = input$plot_sites
+      filename = download_filename()$plot
     )
 
+    if (input$multi_site) {
+      opts$selected_ids = req(input$plot_sites)
+      df <- filter(df, site_id %in% opts$selected_ids)
+    }
+
+    req(nrow(sites) > 0)
     req(nrow(df) > 0)
     req(all(opts$cols %in% names(df)))
-    if (input$multi_site) req(opts$selected_ids)
+
+    # change marker style depending on amount of data
+    opts$mode <- ifelse(nrow(df) <= 100, "lines+markers", "lines")
+    opts$linewidth <- ifelse(nrow(df) <= 500, 2, 1)
+
+    # create plot title
+    opts$title <- if (!input$multi_site) {
+      req(nrow(sites) == 1)
+      sprintf("%s data for %.3f°N, %.3f°W", opts$data_name, sites$lat, sites$lng)
+    } else {
+      site_locs <-
+        with(
+          filter(sites, id %in% opts$selected_ids),
+          sprintf("Site %s: %.2f,%.2f", id, lat, lng)
+        ) %>%
+        paste(collapse = " / ") %>%
+        str_wrap(120) %>%
+        str_replace_all("\\\n", "<br>")
+      paste0(opts$data_name, " data<br><span style='font-size:12px;font-style:italic;'>", site_locs, "</span>")
+    }
 
     if ("datetime_local" %in% names(df)) df$date <- df$datetime_local
 
@@ -973,6 +1022,10 @@ server <- function(input, output, session) {
 
     plt <- plot_ly() %>%
       layout(
+        title = list(
+          text = opts$title,
+          font = OPTS$plot_title_font
+        ),
         hovermode = "x unified",
         showlegend = TRUE,
         margin = list(t = 50, r = 50),
@@ -991,6 +1044,16 @@ server <- function(input, output, session) {
             font = OPTS$plot_axis_font
           )
         )
+      ) %>%
+      config(
+        displaylogo = FALSE,
+        toImageButtonOptions = list(
+          format = "png",
+          filename = opts$filename,
+          height = 800,
+          width = 1500,
+          scale = 1
+        )
       )
 
     for (col in opts$cols) {
@@ -999,10 +1062,10 @@ server <- function(input, output, session) {
 
       add_trace_to_plot <- function(plt, x, y, name) {
         add_trace(
-          plt, x = x, y = signif(y),
+          plt, x = x, y = y,
           name = name, type = "scatter", mode = opts$mode,
           yaxis = col_axis,
-          hovertemplate = paste0("%{y:%s}", find_unit(col, opts$unit_system)),
+          hovertemplate = paste0("%{y:.3~f}", find_unit(col, opts$unit_system)),
           line = list(shape = "spline", width = opts$linewidth)
         )
       }
@@ -1025,31 +1088,10 @@ server <- function(input, output, session) {
     plt
   })
 
-  # ## data_dt // renderDT ----
-  # output$data_dt <- renderDT({
-  #   selected_data() %>%
-  #     mutate(across(any_of(c("datetime_utc", "datetime_local")), as.character))
-  # },
-  #   extensions = "FixedColumns",
-  #   options = list(
-  #     autoWidth = TRUE,
-  #     dom = "trip",
-  #     scrollResize = TRUE,
-  #     scrollX = TRUE,
-  #     scrollY = 400,
-  #     scrollCollapse = TRUE,
-  #     pageLength = 24,
-  #     fixedColumns = list(leftColumns = 1)
-  #   )
-  # )
-
   ## download_data // downloadHandler ----
   output$download_data <- downloadHandler(
     filename = function() {
-      type <- req(input$data_type)
-      name <- invert(OPTS$data_type_choices)[[type]]
-      dates <- selected_dates()
-      paste0(name, " data ", dates$start, " - ", dates$end, ".csv")
+      paste0(download_filename()$csv, ".csv")
     },
     content = function(file) {
       download_data() %>% write_excel_csv(file, na = "")

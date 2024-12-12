@@ -744,12 +744,14 @@ OPTS <- lst(
 
   # allowable names for site loading
   site_cols = c(
+    id = "id",
     name = "name",
     name = "location",
     lat = "latitude",
     lng = "longitude",
     lng = "long"
   ),
+  max_sites = 10,
 
   # data types
   data_type_choices = list(
@@ -774,6 +776,10 @@ OPTS <- lst(
   daily_attr_cols = c("date", "yday", "year", "month", "day"),
   plot_default_cols = c("temperature", "temperature_mean", "temperature_mean_7day", "base_50_upper_86_cumulative"),
   plot_ignore_cols = c(site_attr_cols, grid_attr_cols, date_attr_cols),
+  plot_title_font = list(
+    family = "Red Hat Display",
+    size = 16
+  ),
   plot_axis_font = list(
     family = "Red Hat Text",
     size = 14
