@@ -18,7 +18,7 @@ server <- function(input, output, session) {
     loc <- loc[names(loc) %in% names(sites_template)]
     loc$lat <- round(loc$lat, 4)
     loc$lng <- round(loc$lng, 4)
-    req(validate_loc(loc))
+    req(validate_ll(loc$lat, loc$lng))
     loc
   }
 
@@ -501,12 +501,10 @@ server <- function(input, output, session) {
         sleepNote = F,
         sleepOpacity = 1
       ) %>%
-      addRectangles(
-        lat1 = OPTS$map_bounds_us$lat1,
-        lat2 = OPTS$map_bounds_us$lat2,
-        lng1 = OPTS$map_bounds_us$lng1,
-        lng2 = OPTS$map_bounds_us$lng2,
-        color = "black", weight = 2,
+      addPolygons(
+        data = service_bounds,
+        color = "black",
+        weight = 2,
         fill = FALSE,
         options = pathOptions(pane = "extent", interactive = FALSE)
       )

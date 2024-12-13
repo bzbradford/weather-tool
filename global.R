@@ -97,35 +97,19 @@ parse_coords <- function(str) {
   coords
 }
 
-#' returns TRUE if location is within service boundary
-#' @param loc list of type { lat: numeric, lng: numeric }
+#' returns TRUE if location is within service boundary shapefile
+#' @param lat latitude of point
+#' @param lng longitude of point
 #' @return boolean
-validate_loc <- function(loc, bounds = OPTS$map_bounds_us) {
-  validate_ll(loc$lat, loc$lng)
+validate_ll <- function(lat, lng) {
+  mapply(function(lat, lng) {
+    if (!is.numeric(lat) | !is.numeric(lng)) return(F)
+    pt <- st_point(c(lng, lat)) %>%
+      st_sfc(crs = 4326) %>%
+      st_transform(st_crs(service_bounds_3857))
+    length(st_intersection(pt, service_bounds_3857)) == 1
+  }, lat, lng)
 }
-
-validate_ll <- function(lat, lng, bounds = OPTS$map_bounds_us) {
-  if (!isTruthy(lat) | !isTruthy(lng)) return(F)
-  between(lat, bounds$lat1, bounds$lat2) &
-    between(lng, bounds$lng1, bounds$lng2)
-}
-
-#' finds center and bounds of IBM grid cell
-#' grid dimensions are 1/45.5 degrees
-#' only provides an approximate grid location
-# find_grid <- function(lat, lng) {
-#   d <- 22.75
-#   grd <- list(
-#     lat1 = floor(lat * d) / d,
-#     lat2 = ceiling(lat * d) / d,
-#     lng1 = floor(lng * d) / d,
-#     lng2 = ceiling(lng * d) / d
-#   )
-#   grd$latc <- mean(c(grd$lat1, grd$lat2))
-#   grd$lngc <- mean(c(grd$lng1, grd$lng2))
-#   grd
-# }
-
 
 
 ## IBM API interface ----
@@ -682,11 +666,16 @@ sites_template <- tibble(
 
 # ibm_cols <- read_csv("data/ibm_cols.csv", show_col_types = F)
 
-saved_weather <- if (file.exists("saved_weather.fst")) {
-  as_tibble(read_fst("saved_weather.fst"))
+saved_weather <- if (file.exists("data/saved_weather.fst")) {
+  as_tibble(read_fst("data/saved_weather.fst"))
 }
 
 # counties_sf <- read_rds("data/counties-conus.rds")
+
+# EPSG 4326 for use in Leaflet
+service_bounds <- read_rds("data/us_ca_clip.rds")
+# transform to EPSG 3857 web mercator for intersecting points
+service_bounds_3857 <- st_transform(service_bounds, 3857)
 
 
 
