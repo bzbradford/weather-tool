@@ -427,7 +427,7 @@ server <- function(input, output, session) {
     )
 
     rv$weather <- wx
-    write_fst(wx, "saved_weather.fst", compress = 90)
+    write_fst(wx, "data/saved_weather.fst", compress = 90)
     runjs("$('#get').html('Fetch weather')")
     enable("get")
   }) %>%
@@ -944,9 +944,11 @@ server <- function(input, output, session) {
 
   ## Reset plot columns ----
   reset_plot_cols <- function() {
+    cols <- plot_cols()
+    default_col <- intersect(cols, OPTS$plot_default_cols)
     updateSelectizeInput(
       inputId = "plot_cols",
-      selected = plot_cols()[1]
+      selected = first_truthy(default_col, cols[1])
     )
   }
 

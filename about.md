@@ -1,4 +1,4 @@
-Use this tool to easily download hourly weather data for any point in the continental United States. Weather data is provided by a subscription to IBM's Environmental Intelligence Suite API. From this hourly weather data, we compute daily values, moving averages, plant disease risk values, and growing degree days.
+Use this tool to easily download hourly weather data for any point in the United States and Canada (below 60°N latitude). Weather data is provided by a subscription to IBM's Environmental Intelligence Suite API. From this hourly weather data, we compute daily values, moving averages, plant disease risk values, and growing degree days.
 
 ### Hourly data
 
@@ -26,4 +26,5 @@ Selected field crops and vegetable disease model outputs are provided. These mod
 -   Tar Spot of corn (aka Tarspotter) - probability of presence. More information: <https://cropprotectionnetwork.org/encyclopedia/tar-spot-of-corn>
 -   Potato physiological days - risk of Early blight when cumulative p-days exceed 300 since crop emergence. More information: <https://vegpath.plantpath.wisc.edu/diseases/potato-early-blight/>
 -   Late blight disease severity values - risk of disease increased with accumulated severity values since last fungicide application. Uses the Wallin BLITECAST algorithm. More information: <https://vegpath.plantpath.wisc.edu/diseases/potato-late-blight/>
--   Carrot foliar disease severity values - risk of disease increases with accumulated disease severity values. More information: <https://vegpath.plantpath.wisc.edu/diseases/carrot-alternaria-and-cercospora-leaf-blights/>
+-   Carrot foliar disease severity values - risk of disease increases with accumulated values. More information: <https://vegpath.plantpath.wisc.edu/diseases/carrot-alternaria-and-cercospora-leaf-blights/>
+-   Cercospora leaf spot daily infection values - risk of disease increases with accumulated values. Based on the model outlined in [A Cerospora Leaf Spot Model for Sugar Beet: In Practice by an Industry](https://apsjournals.apsnet.org/doi/abs/10.1094/PDIS.1998.82.7.716). More information about Cercospora leaf spot: <https://vegpath.plantpath.wisc.edu/diseases/carrot-alternaria-and-cercospora-leaf-blights/>
