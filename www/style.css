@@ -214,6 +214,11 @@ table {
   font-weight: bold;
 }
 
+.modal-dialog {
+  width: 800px;
+  max-width: 90vw;
+}
+
 
 /*--- LEAFLET ---*/
 

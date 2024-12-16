@@ -13,6 +13,7 @@ suppressPackageStartupMessages({
   library(sf) # GIS
   library(fst) # file storage
   library(httr2) # requests
+  library(markdown)
 
   library(shiny)
   library(shinythemes)
@@ -67,7 +68,8 @@ first_truthy <- function(...) {
 c_to_f <- function(x) x * 1.8 + 32
 mm_to_in <- function(x) x / 25.4
 cm_to_in <- function(x) x / 2.54
-km_to_mi <- function(x) x / 1.609
+# km_to_mi <- function(x) x / 1.609
+mps_to_mph <- function(x) x * 2.237
 mbar_to_inHg <- function(x) x / 33.864
 
 
@@ -248,7 +250,7 @@ measures <- tribble(
   "relative_humidity", "%", "%", \(x) x,
   "precip", "mm", "in", mm_to_in,
   "snow", "cm", "in", cm_to_in,
-  "wind_speed", "km/hr", "mph", km_to_mi,
+  "wind_speed", "m/s", "mph", mps_to_mph,
   "wind_direction", "°", "°", \(x) x,
   "pressure_mean_sea_level", "mbar", "inHg", mbar_to_inHg,
   "pressure_change", "mbar", "inHg", mbar_to_inHg,
@@ -615,7 +617,9 @@ build_hourly <- function(ibm_hourly) {
     arrange(grid_lat, grid_lng, datetime_utc) %>%
     mutate(precip_cumulative = cumsum(precip), .after = precip) %>%
     mutate(snow_cumulative = cumsum(snow), .after = snow) %>%
-    mutate(dew_point_depression = abs(temperature - dew_point), .after = dew_point)
+    mutate(dew_point_depression = abs(temperature - dew_point), .after = dew_point) %>%
+    # km/hr => m/s
+    mutate(across(wind_speed, ~.x / 3.6))
 }
 
 #' Generate daily summary data from hourly weather
@@ -712,8 +716,6 @@ build_disease_from_ma <- function(ma) {
 
   # calculate disease models from moving averages
   disease <- ma %>%
-    # km/hr => m/s
-    mutate(across(wind_speed_max_30day, ~.x / 3.6)) %>%
     mutate(
       sporecaster_dry_probability =
         sporecaster_dry(temperature_max_30day, wind_speed_max_30day),
