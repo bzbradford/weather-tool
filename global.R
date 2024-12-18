@@ -63,12 +63,32 @@ first_truthy <- function(...) {
 }
 
 
+# NA-safe summary functions
+calc_sum <- function(x) {
+  if (all(is.na(x))) return(NA)
+  sum(x, na.rm = TRUE)
+}
+calc_min <- function(x) {
+  if (all(is.na(x))) return(NA)
+  min(x, na.rm = TRUE)
+}
+calc_mean <- function(x) {
+  if (all(is.na(x))) return(NA)
+  mean(x, na.rm = TRUE)
+}
+calc_max <- function(x) {
+  if (all(is.na(x))) return(NA)
+  max(x, na.rm = TRUE)
+}
+
+
 ## Unit conversions ----
 
 c_to_f <- function(x) x * 1.8 + 32
 mm_to_in <- function(x) x / 25.4
 cm_to_in <- function(x) x / 2.54
 # km_to_mi <- function(x) x / 1.609
+kmh_to_mps <- function(x) x / 3.6
 mps_to_mph <- function(x) x * 2.237
 mbar_to_inHg <- function(x) x / 33.864
 
@@ -234,7 +254,7 @@ ibm_vars <- c(
   # "uv_index",
   # "visibility",
   "wind_speed",
-  # "wind_gust",
+  "wind_gust",
   "wind_direction",
   "pressure_mean_sea_level",
   "pressure_change"
@@ -251,6 +271,7 @@ measures <- tribble(
   "precip", "mm", "in", mm_to_in,
   "snow", "cm", "in", cm_to_in,
   "wind_speed", "m/s", "mph", mps_to_mph,
+  "wind_gust", "m/s", "mph", mps_to_mph,
   "wind_direction", "°", "°", \(x) x,
   "pressure_mean_sea_level", "mbar", "inHg", mbar_to_inHg,
   "pressure_change", "mbar", "inHg", mbar_to_inHg,
@@ -619,7 +640,7 @@ build_hourly <- function(ibm_hourly) {
     mutate(snow_cumulative = cumsum(snow), .after = snow) %>%
     mutate(dew_point_depression = abs(temperature - dew_point), .after = dew_point) %>%
     # km/hr => m/s
-    mutate(across(wind_speed, ~.x / 3.6))
+    mutate(across(c(wind_speed, wind_gust), kmh_to_mps))
 }
 
 #' Generate daily summary data from hourly weather
@@ -631,20 +652,14 @@ build_daily <- function(hourly) {
     distinct(grid_id, grid_lat, grid_lng)
 
   # summarized by calendar date
+  summary_fns <- c("min" = calc_min, "mean" = calc_mean, "max" = calc_max)
   by_date <- hourly %>%
     summarize(
-      across(
-        c(temperature, dew_point, dew_point_depression, relative_humidity),
-        c(min = min, mean = mean, max = max)
-      ),
-      across(
-        c(precip, snow),
-        c(daily = sum, max_hourly = max)
-      ),
-      across(
-        c(pressure_mean_sea_level, wind_direction, wind_speed),
-        c(min = min, mean = mean, max = max)
-      ),
+      across(c(temperature, dew_point, dew_point_depression, relative_humidity), summary_fns),
+      across(c(precip, snow), c("daily" = calc_sum, "max_hourly" = calc_max)),
+      across(c(pressure_mean_sea_level, wind_speed), summary_fns),
+      wind_gust_max = calc_max(wind_gust),
+      across(c(wind_direction), summary_fns),
       hours_rh_over_80 = sum(relative_humidity >= 80),
       hours_rh_over_90 = sum(relative_humidity >= 90),
       hours_missing = 24 - n(),

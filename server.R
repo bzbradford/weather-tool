@@ -1026,7 +1026,7 @@ server <- function(input, output, session) {
           text = opts$title,
           font = OPTS$plot_title_font
         ),
-        hovermode = "x unified",
+        hovermode = "x",
         showlegend = TRUE,
         margin = list(t = 50, r = 50),
         legend = list(orientation = "h"),

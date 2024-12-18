@@ -1,8 +1,10 @@
-Use this tool to easily download hourly weather data for any point in the United States and Canada (below 60°N latitude). Weather data is provided by a subscription to IBM's Environmental Intelligence Suite API. From this hourly weather data, we compute daily values, moving averages, plant disease risk values, and growing degree days.
+Use this tool to easily download hourly weather data for any point in the United States and Canada (below 60°N latitude). Weather data is provided by a subscription to IBM's Environmental Intelligence Suite API. From this hourly weather data, we compute daily values, moving averages, growing degree days, and selected plant disease risk values.
 
 ### Hourly data
 
-Hourly data includes the timestamp in GMT and an adjustment to local time based on the timezone associated with the GPS coordinates. This is accomplished using the `tz_lookup_coords` function from the `lutz` package. This method may not correctly assign the time zone at timezone borders. Hourly weather parameters include air temperature, dew point, dew point depression (difference between air temperature and dew point), relative humidity, precipitation, snow accumulation, wind speed, wind direction, pressure (mean sea level), and pressure change since the previous hour.
+Hourly data includes the timestamp in UTC and an adjustment to local time based on the timezone associated with the GPS coordinates. This is accomplished using the `tz_lookup_coords` function from the `lutz` package. This method may not correctly assign the time zone at timezone borders. Hourly weather parameters include air temperature, dew point, dew point depression (difference between air temperature and dew point), relative humidity, precipitation, snow accumulation, wind speed, wind gusts, wind direction, barometric pressure (mean sea level), and pressure change since the previous hour.
+
+Note: A wind gust is defined as a brief increase in wind speed that is at least 10 mph (16 km/h, 4.5 m/s) faster than the average wind speed and peaks above 18 mph (30 km/h, 8 m/s). Due to these definitions not every hour or day will have recorded wind gusts.
 
 ### Daily data
 
