@@ -142,6 +142,47 @@ server <- function(input, output, session) {
   })
 
 
+  ## Cookie handling ----
+
+  set_cookie <- function(sites) {
+    sites_json <- jsonlite::toJSON(sites)
+    runjs(str_glue('setCookie({sites_json})'))
+  }
+
+  delete_cookie <- function() {
+    runjs("deleteCookie()")
+  }
+
+  # store sites to cookie
+  observe({
+    sites <- sites_df()
+    if (nrow(sites) > 0) set_cookie(sites)
+  })
+
+  # on load read cookie data
+  observe({
+    runjs("sendCookieToShiny()")
+  })
+
+  # parse sites from cookie data
+  observe({
+    cookie <- req(input$cookie)
+    tryCatch({
+      cookie_sites <- jsonlite::fromJSON(cookie)
+      sites <- cookie_sites %>%
+        select(all_of(names(sites_template))) %>%
+        filter(validate_ll(lat, lng)) %>%
+        distinct() %>%
+        head(OPTS$max_sites)
+      req(nrow(sites) > 0)
+      if (nrow(sites) > 1) updateSwitchInput(inputId = "multi_site", value = TRUE)
+      rv$sites <- sites
+      rv$selected_site <- first(sites$id)
+    }, error = function(e) {
+      delete_cookie()
+    })
+  })
+
 
   # Help UI ----
 
@@ -165,7 +206,7 @@ server <- function(input, output, session) {
         class = "flex-down",
         p(em("Load or queue up multiple sites. A clicked or searched location must be clicked again to save it to the list.")),
         uiOutput("temp_site_ui"),
-        tags$label("Sites list:"),
+        tags$label("Saved sites:"),
         uiOutput("sites_tbl"),
         div(
           class = "flex-across",
@@ -210,6 +251,7 @@ server <- function(input, output, session) {
       clean_names("title")
   })
 
+
   ## file_upload_ui // renderUI ----
   output$file_upload_ui <- renderUI({
     req(rv$show_upload)
@@ -234,7 +276,6 @@ server <- function(input, output, session) {
   # try read sites from csv. max 100 sites
   load_sites <- function(fpath) {
     df <- read_csv(fpath, col_types = "c", show_col_types = F)
-    # df <- read_csv(fpath, show_col_types = F)
     stopifnot("File was empty" = {nrow(df) > 0})
     df <- df %>%
       clean_names() %>%
@@ -279,6 +320,7 @@ server <- function(input, output, session) {
   observe({
     rv$sites <- sites_template
     rv$selected_site <- 1
+    delete_cookie()
   }) %>% bindEvent(input$clear_sites)
 
 
