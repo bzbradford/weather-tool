@@ -25,6 +25,7 @@ suppressPackageStartupMessages({
   library(leaflet)
   library(leaflet.extras)
   library(plotly)
+  library(DT)
   # library(gt)
 })
 
@@ -45,7 +46,7 @@ suppressPackageStartupMessages({
 
 # message and print an object to the console for testing
 echo <- function(x) {
-  message(deparse(substitute(x)))
+  message(deparse(substitute(x)), " <", typeof(x), ">")
   print(x)
 }
 
@@ -99,8 +100,8 @@ mbar_to_inHg <- function(x) x / 33.864
 #' @param str input string containing coordinates to parse in form "lat, lng"
 #' @returns named list { lat: numeric, lng: numeric }
 parse_coords <- function(str) {
-  str <- gsub("[ °NW]", "", str)
-  parts <- str_split_1(str, ",")
+  str <- gsub("[ ,\t°NW]", " ", str)
+  parts <- str_split_1(str_squish(str), " ")
   if (length(parts) != 2) stop("Invalid coordinate format.")
   coords <- suppressWarnings(list(
     lat = as.numeric(parts[1]),
@@ -193,10 +194,10 @@ get_ibm <- function(lat, lng, start_date, end_date) {
       resp_body_json(resp, simplifyVector = T) %>% as_tibble()
     }, error = function(e) return(tibble()))
   })
-  weather <- bind_rows(responses)
+  wx <- bind_rows(responses)
   msg <- str_glue("weather for {lat}, {lng} from {start_date} to {end_date} in {Sys.time() - stime}")
-  message(ifelse(nrow(weather) > 0, "OK ==> Got ", "FAIL ==> Could not get "), msg)
-  weather
+  message(ifelse(nrow(wx) > 0, "OK ==> Got ", "FAIL ==> Could not get "), msg)
+  wx
 }
 
 
@@ -219,6 +220,47 @@ clean_ibm <- function(ibm_response) {
     mutate(time_zone = lutz::tz_lookup_coords(grid_lat, grid_lng, warn = F), .after = datetime_utc) %>%
     mutate(datetime_local = with_tz(datetime_utc, first(time_zone)), .by = time_zone, .after = time_zone) %>%
     mutate(date = as_date(datetime_local), .after = datetime_local)
+}
+
+#' Update weather for sites list and date range
+#' @param sites tibble with site locs
+#' @param date_range list with $start and $end dates
+fetch_weather <- function(sites, date_range) {
+  status <- "ok"
+  dates_need <- seq.Date(date_range$start, date_range$end, 1)
+  if (!exists("weather")) weather <<- tibble()
+  for (i in 1:nrow(sites)) {
+    site <- sites[i,]
+
+    # already have some weather?
+    if (nrow(weather) > 0) {
+      grids <- build_grids(weather, date_range)
+      grid_dates <- weather %>%
+        summarize(hours = n(), .by = c(grid_id, date)) %>%
+        filter(hours > 12)
+      dates_have <- site %>%
+        st_join(grids) %>%
+        left_join(grid_dates, join_by(grid_id)) %>%
+        pull(date)
+      dates <- as_date(setdiff(dates_need, dates_have))
+    } else {
+      dates <- dates_need
+    }
+
+    # get weather if needed
+    if (length(dates) > 0) {
+      resp <- get_ibm(site$lat, site$lng, first(dates) - 1, last(dates) + 1)
+      incProgress(1)
+      if (nrow(resp) == 0) {
+        status <- sprintf("Unable to get some/all weather for %.2f, %.2f from %s to %s.", site$lat, site$lng, first(dates), last(dates))
+        next
+      }
+      new_wx <- clean_ibm(resp)
+      saved_weather <<- bind_rows(saved_weather, new_wx) %>%
+        distinct(grid_id, datetime_utc, .keep_all = T)
+    }
+  }
+  return(status)
 }
 
 
@@ -594,19 +636,23 @@ gdd_sine <- function(tmin, tmax, base) {
 #' Summarize downloaded wether data by grid cell and creates sf object
 #' used to intersect site points with existing weather data
 #' @param ibm_hourly hourly weather data from `clean_ibm` function
-build_grids <- function(ibm_hourly) {
+#' @param selected_dates list with start and end dates
+build_grids <- function(ibm_hourly, selected_dates) {
+  echo(selected_dates)
+  dates_expected <- seq.Date(selected_dates$start, selected_dates$end, 1)
   ibm_hourly %>%
+    filter(between(date, selected_dates$start, selected_dates$end)) %>%
     summarize(
       date_min = min(date),
       date_max = max(date),
-      days_expected = as.integer(max(date) - min(date)) + 1,
+      days_expected = length(dates_expected),
       days_actual = n_distinct(date),
       days_missing = days_expected - days_actual,
-      days_missing_pct = days_missing / days_actual,
+      days_missing_pct = days_missing / days_expected,
       hours_expected = days_expected * 24,
       hours_actual = n(),
       hours_missing = hours_expected - hours_actual,
-      hours_missing_pct = hours_missing / hours_actual,
+      hours_missing_pct = hours_missing / hours_expected,
       .by = c(grid_id, grid_lat, grid_lng)
     ) %>%
     rowwise() %>%
@@ -816,6 +862,113 @@ build_gdd_from_daily <- function(daily) {
 }
 
 
+
+# Helper functions --------------------------------------------------------
+
+create_id <- function(ids) {
+  ids <- as.integer(ids)
+  possible_ids <- 1:(length(ids) + 1)
+  setdiff(possible_ids, ids)
+}
+
+# try read sites from csv
+load_sites <- function(fpath) {
+  df <- read_csv(fpath, col_types = "c", show_col_types = F)
+  if (nrow(df) == 0) stop("File was empty")
+  df <- df %>%
+    clean_names() %>%
+    select(any_of(OPTS$site_cols)) %>%
+    drop_na()
+  if (!(all(c("name", "lat", "lng") %in% names(df)))) stop("File did not contain [name] [lat] [lng] columns.")
+  df <- df %>%
+    mutate(
+      name = sanitize_loc_names(name),
+      lat = round(lat, 2),
+      lng = round(lng, 2)
+    ) %>%
+    distinct(name, lat, lng) %>%
+    filter(validate_ll(lat, lng))
+  if (nrow(df) == 0) stop("No valid locations within service area.")
+  df %>%
+    mutate(id = row_number(), .before = 1) %>%
+    head(OPTS$max_sites)
+}
+
+# load_sites("data/example-sites.csv")
+# load_sites("dev/wisconet stns.csv")
+
+sanitize_loc_names <- function(vec) {
+  str_trunc(htmltools::htmlEscape(vec), 20)
+}
+
+# site_tbl_icons <- function(ids) {
+#   link <- function(input, id) {
+#     sprintf("Shiny.setInputValue('%s', '%s', {priority: 'event'})", input, id)
+#   }
+#   sapply(ids, function(id) {
+#     div(
+#       style = "display: inline-flex; gap: 10px;",
+#       a(style = "cursor: pointer;", onclick = link("edit_site", id), icon("edit")),
+#       a(style = "cursor: pointer;", onclick = link("delete_site", id), data_confirm = "are you sure?", icon("trash"))
+#     ) %>% as.character()
+#   })
+# }
+
+# add_site_action_icons <- function(sites) {
+#   link <- function(input, id) {
+#     sprintf("Shiny.setInputValue('%s', '%s', {priority: 'event'})", input, id)
+#   }
+#   sites %>%
+#     mutate(
+#       actions = if_else(
+#         temp,
+#         as.character(a(style = "cursor: pointer;", onclick = link("save_site", id), icon("save"))),
+#         as.character(div(
+#           style = "display: inline-flex; gap: 10px;",
+#           a(style = "cursor: pointer;", onclick = link("edit_site", id), icon("edit")),
+#           a(style = "cursor: pointer;", onclick = link("delete_site", id), icon("trash"))
+#         ))
+#       ) %>% lapply(HTML)
+#     ) %>%
+#     select(-temp)
+# }
+
+add_site_action_icons <- function(sites) {
+  link <- function(input, id) {
+    sprintf("Shiny.setInputValue('%s', '%s', {priority: 'event'})", input, id)
+  }
+  sites %>%
+    mutate(
+      actions = if_else(
+        temp,
+        as.character(a(style = "cursor: pointer;", onclick = link("save_site", id), icon("save"))),
+        as.character(div(
+          style = "display: inline-flex; gap: 10px;",
+          a(style = "cursor: pointer;", onclick = link("edit_site", id), icon("edit")),
+          a(style = "cursor: pointer;", onclick = link("delete_site", id), icon("trash"))
+        ))
+      ) %>% lapply(HTML)
+    ) %>%
+    select(-temp)
+}
+
+site_action_link <- function(input_id, site_id, icon_type) {
+  action <- sprintf("Shiny.setInputValue('%s', '%s', {priority: 'event'})", input_id, site_id)
+  print(action)
+  sprintf("<a style='cursor:pointer' onclick=%s>%s</a>", action, as.character(icon(icon_type)))
+}
+
+
+# sites
+#
+# site_tbl_icons(c(1, 2, 3))
+#
+# icon("edit")
+# icon("arrow-up")
+# icon("x")
+
+
+
 # Startup ----------------------------------------------------------------------
 
 ## Load files ----
@@ -893,9 +1046,8 @@ OPTS <- lst(
 
   # allowable names for site loading
   site_cols = c(
-    id = "id",
+    # id = "id",
     name = "name",
-    name = "location",
     lat = "latitude",
     lng = "longitude",
     lng = "long"

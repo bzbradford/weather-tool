@@ -26,11 +26,25 @@ ui <- fluidPage(
   div(class = "main-container",
     div(class = "column sidebar-container",
       h2("Site selection"),
-      div(class = "flex-down",
-        materialSwitch("multi_site", "Multi site mode"),
-        uiOutput("site_ui"),
-        uiOutput("date_ui"),
-        uiOutput("action_ui")
+      div(
+        div(
+          style = "margin-top: 10px;",
+          materialSwitch("multi_site", "Multi site mode")
+        ),
+        div(
+          style = "margin-top: -10px;",
+          uiOutput("site_ui"),
+          uiOutput("multi_site_ui"),
+        ),
+        div(
+          style = "margin-top: 20px;",
+          uiOutput("date_ui"),
+        ),
+        div(
+          style = "margin-top: 20px;",
+          uiOutput("action_ui"),
+          uiOutput("status_ui")
+        )
       )
     ),
     div(class = "column map-container",
@@ -41,8 +55,10 @@ ui <- fluidPage(
       )
     ),
     div(class = "column data-container",
-      h2("Data"),
-      uiOutput("data_ui")
+      tabsetPanel(
+        tabPanel("View data", dataUI()),
+        tabPanel("Disease risk", riskUI())
+      )
     )
   ),
   tags$footer(
