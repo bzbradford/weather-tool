@@ -8,6 +8,7 @@ server <- function(input, output, session) {
     sites <- rv$sites
     loc$id <- create_id(sites$id)
     loc$temp <- !isTruthy(loc$temp)
+    if (!input$multi_site) loc$temp <- FALSE
 
     # make sure it has all the attributes
     stopifnot(all(names(sites_template) %in% names(loc)))
@@ -79,37 +80,68 @@ server <- function(input, output, session) {
       rv$sites %>% filter(id == rv$selected_site)
   })
 
-  ## sites_sf ----
-  sites_sf <- reactive({
-    sites <- sites_df()
-    req(nrow(sites) > 0)
-    sites %>%
-      st_as_sf(coords = c("lng", "lat"), crs = 4326, remove = F)
-  })
-
   ## wx_grids ----
   wx_grids <- reactive({
     wx <- rv$weather
     req(nrow(wx) > 0)
-    build_grids(wx, selected_dates())
+    build_grids(wx)
   })
 
-  ## sites_with_grid ----
-  sites_with_grid <- reactive({
-    sites_sf() %>%
-      st_join(wx_grids()) %>%
-      st_set_geometry(NULL)
-  })
+  ## sites_sf ----
+  sites_sf <- reactive({
+    sites <- sites_df()
+    req(nrow(sites) > 0)
 
-
-  ## wx_hourly ----
-  wx_hourly <- reactive({
     wx <- rv$weather
+    sf <- sites %>%
+      st_as_sf(coords = c("lng", "lat"), crs = 4326, remove = F)
+
+    if (nrow(wx) > 0) {
+      sf %>% st_join(wx_grids())
+    } else {
+      sf %>% mutate(grid_id = NA)
+    }
+  })
+
+  wx_status <- reactive({
+    wx <- rv$weather
+    dates <- selected_dates()
     req(nrow(wx) > 0)
-    wx %>%
-      filter(grid_id %in% sites_with_grid()$grid_id) %>%
-      filter(between(date, selected_dates()$start, selected_dates()$end)) %>%
+    weather_status(wx, dates$start, dates$end)
+  })
+
+  grids_with_status <- reactive({
+    wx_grids() %>%
+      left_join(wx_status(), join_by(grid_id))
+  })
+
+  sites_with_status <- reactive({
+    sites_sf() %>%
+      left_join(wx_status(), join_by(grid_id))
+  })
+
+  wx_data <- reactive({
+    wx_ibm <- rv$weather
+    req(nrow(wx_ibm) > 0)
+
+    wx <- list()
+    wx$sites <- sites_with_status()
+    wx$dates <- selected_dates()
+    wx$hourly <- wx_ibm %>%
+      filter(grid_id %in% wx$sites$grid_id) %>%
+      filter(between(date, wx$dates$start, wx$dates$end)) %>%
       build_hourly()
+    wx$daily <- build_daily(wx$hourly)
+    wx$ma_center <- build_ma_from_daily(wx$daily, "center")
+    wx$ma_right <- build_ma_from_daily(wx$daily, "right")
+    wx$disease <- left_join(
+      build_disease_from_daily(wx$daily),
+      build_disease_from_ma(wx$ma_right),
+      join_by(grid_id, date)
+    )
+    wx$gdd <- build_gdd_from_daily(wx$daily)
+
+    wx
   })
 
 
@@ -124,15 +156,14 @@ server <- function(input, output, session) {
     runjs("deleteCookie()")
   }
 
-  # store sites to cookie
-  observe({
-    sites <- sites_df()
-    if (nrow(sites) > 0) set_cookie(sites)
-  })
-
   # on load read cookie data
   observe({
     runjs("sendCookieToShiny()")
+
+    cookie_writer <- observe({
+      sites <- sites_df()
+      if (nrow(sites) > 0) set_cookie(sites) else delete_cookie()
+    })
   })
 
   # parse sites from cookie data
@@ -151,9 +182,10 @@ server <- function(input, output, session) {
       } else {
         updateSwitchInput(inputId = "multi_site", value = TRUE)
       }
-      rv$sites <- sites %>%
-        mutate(temp = FALSE)
+      rv$sites <- mutate(sites, temp = FALSE)
       rv$selected_site <- first(sites$id)
+      fit_sites()
+      showNotification(paste("Loaded", nrow(sites), ifelse(nrow(sites) == 1, "site", "sites"), "from a previous session."))
     }, error = function(e) {
       delete_cookie()
     })
@@ -182,7 +214,8 @@ server <- function(input, output, session) {
     DTOutput("sites_tbl")
   })
 
-  sites_for_tbl <- reactive({
+  # sites formatted for DT
+  sites_tbl <- reactive({
     sites_df() %>%
       mutate(id = as.character(id)) %>%
       mutate(across(c(lat, lng), ~round(.x, 2))) %>%
@@ -190,15 +223,10 @@ server <- function(input, output, session) {
       select(id, name, lat, lng, actions)
   })
 
-  observe({
-    df <- sites_for_tbl()
-    dataTableProxy("sites_tbl") %>%
-      replaceData(df, rownames = FALSE)
-  })
-
+  # render initial DT
   output$sites_tbl <- renderDT({
     datatable(
-      isolate(sites_for_tbl()),
+      isolate(sites_tbl()),
       colnames = c("ID", "Name", "Lat", "Lng", ""),
       rownames = FALSE,
       selection = "none",
@@ -213,6 +241,13 @@ server <- function(input, output, session) {
         )
       )
     )
+  })
+
+  # refresh DT
+  observe({
+    df <- sites_tbl()
+    dataTableProxy("sites_tbl") %>%
+      replaceData(df, rownames = FALSE)
   })
 
   output$multi_site_ui <- renderUI({
@@ -233,15 +268,18 @@ server <- function(input, output, session) {
 
 
   ## handle edit/delete buttons ----
+
+  # observe(echo(input$delete_site))
+  # observe(echo(input$edit_site))
+  # observe(echo(input$save_site))
+
   # TODO: Add confirmations/modals
   observeEvent(input$delete_site, {
     to_delete_id <- req(input$delete_site)
     rv$sites <- rv$sites %>% filter(id != to_delete_id)
   })
 
-  observe(echo(input$delete_site))
-  observe(echo(input$edit_site))
-  observe(echo(input$save_site))
+
 
 
   ## file_upload_ui // renderUI ----
@@ -366,9 +404,9 @@ server <- function(input, output, session) {
     wx <- rv$weather
     if (is.null(wx)) return(TRUE)
     if (nrow(wx) == 0) return(TRUE)
-    grids <- sites_with_grid()
-    if (anyNA(grids$grid_id)) return(TRUE)
-    if (any(grids$hours_missing > 0)) return(TRUE)
+    sites <- sites_with_status()
+    if (anyNA(sites$grid_id)) return(TRUE)
+    if (any(sites$needs_download)) return(TRUE)
     FALSE
   })
 
@@ -383,8 +421,6 @@ server <- function(input, output, session) {
       dates_valid = as_date(start_date) <= as_date(end_date),
       need_weather = need_weather()
     )
-
-    echo(sites)
 
     elem <- if (nrow(sites) == 0) {
       btn("No sites selected", disabled = TRUE)
@@ -406,7 +442,7 @@ server <- function(input, output, session) {
 
   ## Handle fetching ----
   observe({
-    sites <- sites_sf()
+    sites <- sites_df()
     date_range <- selected_dates()
     disable("get")
     runjs("$('#get').html('Downloading weather...')")
@@ -416,7 +452,7 @@ server <- function(input, output, session) {
       message = "Downloading weather...",
       value = 0, min = 0, max = nrow(sites),
       {
-        status <- fetch_weather(sites, date_range)
+        status <- fetch_weather(sites, date_range$start, date_range$end)
         if (status != "ok") {
           rv$status_msg <- list(
             class = "shiny-output-error",
@@ -427,7 +463,6 @@ server <- function(input, output, session) {
     )
 
     rv$weather <- saved_weather
-    write_fst(weather, "data/saved_weather.fst", compress = 99)
     runjs("$('#get').html('Fetch weather')")
     enable("get")
   }) %>%
@@ -576,24 +611,24 @@ server <- function(input, output, session) {
     clearGroup(map, "sites")
     clearGroup(map, "temp")
 
-    sites <- if (is.null(rv$weather)) {
+    wx <- rv$weather
+
+    sites <- if (nrow(wx) == 0) {
       sites_df() %>%
         mutate(
           group = if_else(temp, "temp", "sites"),
           icon = "download"
         )
     } else {
-      sites_with_grid() %>%
+      sites_with_status() %>%
         mutate(icon_num = as.character(row_number()) %>% substr(nchar(.), nchar(.))) %>%
         mutate(
           icon = case_when(
             input$multi_site & temp ~ "plus",
-            selected_dates()$start < date_min |
-              selected_dates()$end > date_max |
-              is.na(days_missing) |
-              days_missing > 0 ~ "download",
+            needs_download ~ "download",
             input$multi_site & !temp ~ icon_num,
-            T ~ "check")
+            T ~ "check"
+          )
         )
     }
 
@@ -631,11 +666,10 @@ server <- function(input, output, session) {
 
   ## Show weather data grids ----
   observe({
-    grids <- wx_grids() %>%
+    grids <- grids_with_status() %>%
       mutate(
-        ready = days_missing == 0,
-        title = if_else(ready, "Downloaded weather grid", "Incomplete weather grid"),
-        color = if_else(ready, "blue", "orange"),
+        title = if_else(needs_download, "Incomplete weather grid", "Downloaded weather grid"),
+        color = if_else(needs_download, "orange", "blue"),
         label = paste0(
           "<b>", title, "</b><br>",
           "Earliest date: ", date_min, "<br>",
@@ -760,13 +794,9 @@ server <- function(input, output, session) {
   # Data tab ----
 
   dataServer(
-    sites_with_grid = reactive(sites_with_grid()),
+    sites_df = reactive(sites_df()),
     selected_site = reactive(rv$selected_site),
-    wx_hourly = reactive(wx_hourly()),
-    selected_dates = reactive(selected_dates())
+    wx_data = reactive(wx_data())
   )
 
-
 }
-
-

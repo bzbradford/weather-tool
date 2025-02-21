@@ -4,7 +4,7 @@ dataUI <- function() {
   uiOutput(ns("main_ui"))
 }
 
-dataServer <- function(sites_with_grid, selected_site, wx_hourly, selected_dates) {
+dataServer <- function(sites_df, selected_site, wx_data) {
   moduleServer(
     id = "data",
     function(input, output, session) {
@@ -16,9 +16,17 @@ dataServer <- function(sites_with_grid, selected_site, wx_hourly, selected_dates
         weather_ready = FALSE,
       )
 
-      ## selected_sites ----
-      selected_sites <- reactive({
-        sites_with_grid() %>%
+      ## selected_data // reactive ----
+      selected_data <- reactive({
+        opts <- list()
+        opts$data_type <- req(input$data_type)
+        if (opts$data_type == "ma") {
+          opts$ma_align <- req(input$ma_align)
+        }
+        wx <- wx_data()
+
+        sites <- wx$sites %>%
+          st_drop_geometry() %>%
           select(
             site_id = id,
             site_name = name,
@@ -26,57 +34,22 @@ dataServer <- function(sites_with_grid, selected_site, wx_hourly, selected_dates
             site_lng = lng,
             grid_id
           )
-      })
-
-      ## wx_daily // daily summary ----
-      wx_daily <- reactive({
-        build_daily(wx_hourly())
-      })
-
-      ## wx_ma // moving averages ----
-      wx_ma <- reactive({
-        align <- req(input$ma_align)
-        build_ma_from_daily(wx_daily(), align)
-      })
-
-      ## wx_disease // disease models ----
-      wx_disease <- reactive({
-        daily <- wx_daily()
-        ma <- build_ma_from_daily(daily, align = "right")
-        attr <- daily %>% select(any_of(OPTS$date_attr_cols), grid_id)
-        d1 <- build_disease_from_ma(ma)
-        d2 <- build_disease_from_daily(daily)
-        attr %>%
-          left_join(d1, join_by(grid_id, date)) %>%
-          left_join(d2, join_by(grid_id, date))
-      })
-
-      wx_gdd <- reactive({
-        build_gdd_from_daily(wx_daily())
-      })
-
-      ## selected_data // reactive ----
-      selected_data <- reactive({
-        type <- req(input$data_type)
-
-        sites <- selected_sites()
 
         data <- switch(
-          req(input$data_type),
-          "hourly" = wx_hourly(),
-          "daily" = wx_daily(),
-          "ma" = wx_ma(),
-          "disease" = wx_disease(),
-          "gdd" = wx_gdd()
+          opts$data_type,
+          "hourly" = wx$hourly,
+          "daily" = wx$daily,
+          "ma" = switch(
+            opts$ma_align,
+            "center" = wx$ma_center,
+            "right" = wx$ma_right
+          ),
+          "disease" = wx$disease,
+          "gdd" = wx$gdd
         )
 
-        data <- data %>%
-          filter(date >= selected_dates()$start) %>%
-          filter(date <= selected_dates()$end)
-
-        # TODO: warning when two sites are in the same grid
         df <- sites %>%
-          left_join(data, join_by(grid_id)) %>%
+          left_join(data, join_by(grid_id), relationship = "many-to-many") %>%
           drop_na(grid_id, date) %>%
           select(-grid_id) %>%
           mutate(across(where(is.numeric), ~signif(.x)))
@@ -98,30 +71,30 @@ dataServer <- function(sites_with_grid, selected_site, wx_hourly, selected_dates
       # for both the csv download and plot png export
       download_filename <- reactive({
         type <- req(input$data_type)
-        data_name <- invert(OPTS$data_type_choices)[[type]]
-        sites <- sites_with_grid()
-        site_name <- if (nrow(sites) > 0) {
+        wx <- wx_data()
+        sites <- wx$sites
+        dates <- wx$dates
+        name_str <- invert(OPTS$data_type_choices)[[type]]
+        site_str <- ifelse(
+          nrow(sites) == 1,
+          sprintf("(%.3f, %.3f)", sites$lat, sites$lng),
           "(multiple locations)"
-        } else {
-          site <- first(sites)
-          sprintf("(%.3f, %.3f)", site$lat, site$lng)
-        }
-        dates <- paste(selected_dates()$start, "to", selected_dates()$end)
+        )
+        date_str <- paste(dates$start, "to", dates$end)
         list(
-          csv = paste(data_name, "data", site_name, "-", dates),
-          plot = paste(data_name, "plot", site_name, "-", dates)
+          csv = paste(name_str, "data", site_str, "-", date_str),
+          plot = paste(name_str, "plot", site_str, "-", date_str)
         )
       })
 
       ## control if the data view is ready ----
       observe({
-        # sr <- nrow(sites_df()) > 0
-        sr <- nrow(sites_with_grid()) > 0
+        sr <- nrow(sites_df()) > 0
         if (rv$sites_ready != sr) rv$sites_ready <- sr
       })
 
       observe({
-        wr <- nrow(wx_hourly()) > 0
+        wr <- nrow(wx_data()$hourly) > 0
         if (rv$weather_ready != wr) rv$weather_ready <- wr
       })
 
@@ -146,9 +119,10 @@ dataServer <- function(sites_with_grid, selected_site, wx_hourly, selected_dates
       })
 
       ## dataset_ui // renderUI ----
+      # TODO: this validation still gets locked out by the reactives
       output$dataset_ui <- renderUI({
-        validate(need(rv$sites_ready, "No sites selected, click on the map or load sites in the sidebar."))
         validate(need(rv$weather_ready, "No weather data downloaded yet for the selected dates. Click 'Fetch Weather' to download."))
+        validate(need(rv$sites_ready, "No sites selected, click on the map or load sites in the sidebar."))
 
         tagList(
           uiOutput(ns("data_msg")),
@@ -177,15 +151,9 @@ dataServer <- function(sites_with_grid, selected_site, wx_hourly, selected_dates
 
       ## data_msg // renderUI ----
       output$data_msg <- renderUI({
-        sites <- sites_with_grid()
-        tests <- c(
-          missing_grid = any(is.na(sites$grid_id)),
-          missing_internal = any(sites$days_missing > 0),
-          missing_early = any(sites$date_min > selected_dates()$start),
-          missing_late = any(sites$date_max < selected_dates()$end)
-        )
-        req(any(tests))
-        echo(tests)
+        sites <- wx_data()$sites
+        req(nrow(sites) > 0)
+        req(any(sites$needs_download))
         span(style = "color: red;", "Some sites are missing data based on your date selections, click 'Fetch weather' to load missing data.")
       })
 
@@ -203,7 +171,7 @@ dataServer <- function(sites_with_grid, selected_site, wx_hourly, selected_dates
 
       ## plot_sites // renderUI ----
       output$plot_sites_ui <- renderUI({
-        sites <- sites_with_grid()
+        sites <- wx_data()$sites
         req(nrow(sites) > 1)
         choices <- set_names(sites$id, sprintf("%s: %s", sites$id, str_trunc(sites$name, 15)))
         checkboxGroupInput(
@@ -267,14 +235,18 @@ dataServer <- function(sites_with_grid, selected_site, wx_hourly, selected_dates
 
       ## data_plot // renderPlotly ----
       output$data_plot <- renderPlotly({
+        wx <- wx_data()
+        sites <- wx$sites
         df <- selected_data()
-        # sites <- sites_df()
-        sites <- sites_with_grid()
         req(nrow(sites) > 0)
 
         opts <- lst(
           multi_site = nrow(sites) > 1,
-          date_range = selected_dates(),
+          dates = wx$dates,
+          date_range = c(
+            ymd_hms(paste(dates$start, "00:00:00")),
+            ymd_hms(paste(dates$end, "23:00:00"))
+          ),
           data_type = req(input$data_type),
           data_name = invert(OPTS$data_type_choices)[[data_type]],
           cols = req(input$plot_cols),
@@ -341,7 +313,7 @@ dataServer <- function(sites_with_grid, selected_site, wx_hourly, selected_dates
             margin = list(t = 50, r = 50),
             legend = list(orientation = "h"),
             xaxis = list(
-              range = c(opts$date_range$start, opts$date_range$end)
+              range = opts$date_range
             ),
             yaxis = list(
               title = list(
