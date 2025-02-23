@@ -8,7 +8,7 @@ server <- function(input, output, session) {
     sites <- rv$sites
     loc$id <- create_id(sites$id)
     loc$temp <- !isTruthy(loc$temp)
-    if (!input$multi_site) loc$temp <- FALSE
+    # if (!input$multi_site) loc$temp <- FALSE
 
     # make sure it has all the attributes
     stopifnot(all(names(sites_template) %in% names(loc)))
@@ -74,10 +74,21 @@ server <- function(input, output, session) {
 
   ## sites_df ----
   sites_df <- reactive({
-    if (input$multi_site)
-      rv$sites
-    else
-      rv$sites %>% filter(id == rv$selected_site)
+    sites <- rv$sites
+    selected_site <- rv$selected_site
+
+    if (input$multi_site) return(sites)
+
+    # if more than one site, drop any temp site
+    sites <- if (nrow(sites) > 1) {
+      sites %>% filter(!temp)
+    } else {
+      sites %>% mutate(temp = FALSE)
+    }
+
+    if (!(selected_site %in% sites$id)) selected_site <- 1
+    rv$selected_site <- selected_site
+    sites %>% filter(id == selected_site)
   })
 
   ## wx_grids ----
@@ -131,6 +142,7 @@ server <- function(input, output, session) {
       filter(grid_id %in% wx$sites$grid_id) %>%
       filter(between(date, wx$dates$start, wx$dates$end)) %>%
       build_hourly()
+    if (nrow(wx$hourly) == 0) return(wx)
     wx$daily <- build_daily(wx$hourly)
     wx$ma_center <- build_ma_from_daily(wx$daily, "center")
     wx$ma_right <- build_ma_from_daily(wx$daily, "right")
@@ -140,7 +152,6 @@ server <- function(input, output, session) {
       join_by(grid_id, date)
     )
     wx$gdd <- build_gdd_from_daily(wx$daily)
-
     wx
   })
 
@@ -162,7 +173,13 @@ server <- function(input, output, session) {
 
     cookie_writer <- observe({
       sites <- sites_df()
-      if (nrow(sites) > 0) set_cookie(sites) else delete_cookie()
+      if (nrow(sites) > 0) {
+        sites %>%
+          filter(!temp) %>%
+          set_cookie()
+      } else {
+        delete_cookie()
+      }
     })
   })
 
@@ -219,7 +236,13 @@ server <- function(input, output, session) {
     sites_df() %>%
       mutate(id = as.character(id)) %>%
       mutate(across(c(lat, lng), ~round(.x, 2))) %>%
-      add_site_action_icons() %>%
+      mutate(actions = paste0(
+        "<div style='display:inline-flex; gap:10px;'>",
+        ifelse(temp, site_action_link("save", id), site_action_link("edit", id)),
+        site_action_link("trash", id),
+        "</div>"
+      ) %>% lapply(HTML)) %>%
+      mutate(name = if_else(temp, paste("[temp]", name), name)) %>%
       select(id, name, lat, lng, actions)
   })
 
@@ -269,17 +292,22 @@ server <- function(input, output, session) {
 
   ## handle edit/delete buttons ----
 
-  # observe(echo(input$delete_site))
-  # observe(echo(input$edit_site))
-  # observe(echo(input$save_site))
+  # only ever 1 temporary site so just make all sites saved
+  observeEvent(input$save_site, {
+    rv$sites <- rv$sites %>% mutate(temp = FALSE)
+  })
 
-  # TODO: Add confirmations/modals
-  observeEvent(input$delete_site, {
-    to_delete_id <- req(input$delete_site)
+  observeEvent(input$trash_site, {
+    to_delete_id <- req(input$trash_site)
     rv$sites <- rv$sites %>% filter(id != to_delete_id)
   })
 
-
+  observeEvent(input$edit_site, {
+    edits <- req(input$edit_site)
+    sites <- rv$sites
+    sites$name[edits$id] <- edits$name
+    rv$sites <- sites
+  })
 
 
   ## file_upload_ui // renderUI ----

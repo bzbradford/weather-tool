@@ -44,7 +44,7 @@ function setCookie(value, name = COOKIE_NAME, days = 30) {
     value = JSON.stringify(value);
   }
   document.cookie = name + '=' + value + expires + '; path=/';
-  return(name)
+  return name;
 }
 
 function getCookie(name = COOKIE_NAME) {
@@ -61,10 +61,26 @@ function getCookie(name = COOKIE_NAME) {
 function sendCookieToShiny(name = COOKIE_NAME) {
   let value = getCookie(name);
   Shiny.setInputValue('cookie', value);
-  return(value)
+  return value;
 }
 
 function deleteCookie(name = COOKIE_NAME) {
   document.cookie = name + '=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
-  return(name)
+  return name;
+}
+
+
+//--- Site action buttons ---//
+
+function editSite(site_id) {
+  let newName = prompt(`Enter a new name for site ${site_id}:`, '');
+  if (newName) Shiny.setInputValue('edit_site', { id: site_id, name: newName }, { priority: 'event' });
+}
+
+function trashSite(site_id) {
+  if (confirm(`Delete site ${site_id}?`)) Shiny.setInputValue('trash_site', site_id, { priority: 'event' });
+}
+
+function saveSite(site_id) {
+  Shiny.setInputValue('save_site', site_id, { priority: 'event' });
 }

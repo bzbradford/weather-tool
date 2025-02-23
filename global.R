@@ -223,55 +223,55 @@ clean_ibm <- function(ibm_response) {
     mutate(date = as_date(datetime_local), .after = datetime_local)
 }
 
+#' Summarize downloaded wether data by grid cell and creates sf object
+#' used to intersect site points with existing weather data
+#' @param ibm_hourly hourly weather data from `clean_ibm` function
+#' @param selected_dates list with start and end dates
+build_grids <- function(wx) {
+  req(nrow(wx) > 0)
+  wx %>%
+    distinct(grid_id, grid_lat, grid_lng) %>%
+    rowwise() %>%
+    mutate(geometry = ll_to_grid(grid_lat, grid_lng)) %>%
+    ungroup() %>%
+    st_set_geometry("geometry")
+}
+
+# saved_weather %>% build_grids()
+
+weather_status <- function(wx, start_date = min(wx$date), end_date = max(wx$date)) {
+  req(nrow(wx) > 0)
+  dates_expected <- seq.Date(start_date, end_date, 1)
+  wx %>%
+    filter(date %in% dates_expected) %>%
+    summarize(
+      date_min = min(date),
+      date_max = max(date),
+      days_expected = length(dates_expected),
+      days_actual = n_distinct(date),
+      days_missing = days_expected - days_actual,
+      days_missing_pct = days_missing / days_expected,
+      time_min_expected = ymd_hms(paste(start_date, "00:20:00"), tz = first(time_zone)),
+      time_min_actual = min(datetime_local),
+      time_max_expected = min(
+        now(tzone = first(time_zone)),
+        ymd_hms(paste(end_date, "23:20:00"), tz = first(time_zone))
+      ),
+      time_max_actual = max(datetime_local),
+      hours_expected = as.integer(difftime(time_max_expected, time_min_expected, units = "hours")),
+      hours_actual = n(),
+      hours_missing = hours_expected - hours_actual,
+      hours_missing_pct = hours_missing / hours_expected,
+      hours_stale = as.integer(difftime(now(tzone = first(time_zone)), time_max_actual, units = "hours")),
+      stale = hours_stale > OPTS$ibm_stale_hours,
+      needs_download = stale | days_missing > 0,
+      .by = grid_id
+    )
+}
+
 #' Update weather for sites list and date range
 #' @param sites sf with site locs
 #' @param date_range list with $start and $end dates
-# fetch_weather <- function(sites, date_range) {
-#
-#   status <- "ok"
-#   dates_need <- seq.Date(date_range$start, date_range$end, 1)
-#   wx <- saved_weather
-#
-#   sites <- if (nrow(wx) > 0) {
-#     grids <- build_grids(wx)
-#   }
-#
-#   for (i in 1:nrow(sites)) {
-#     site <- slice(sites, i)
-#
-#     # already have some weather?
-#     dates <- if (nrow(wx) > 0) {
-#       grids <- build_grids(wx, date_range)
-#       grid_dates <- wx %>%
-#         summarize(hours = n(), .by = c(grid_id, date)) %>%
-#         filter(hours > 18)
-#       dates_have <- site %>%
-#         st_join(grids) %>%
-#         left_join(grid_dates, join_by(grid_id)) %>%
-#         pull(date)
-#       as_date(setdiff(dates_need, dates_have))
-#     } else {
-#       dates_need
-#     }
-#
-#     # get weather if needed
-#     if (length(dates) > 0) {
-#       resp <- get_ibm(site$lat, site$lng, first(dates) - 1, last(dates) + 1)
-#       incProgress(1)
-#       if (nrow(resp) == 0) {
-#         status <- sprintf("Unable to get some/all weather for %.2f, %.2f from %s to %s.", site$lat, site$lng, first(dates), last(dates))
-#         next
-#       }
-#       new_wx <- clean_ibm(resp)
-#       saved_weather <<- bind_rows(wx, new_wx) %>%
-#         distinct(grid_id, datetime_utc, .keep_all = T) %>%
-#         arrange(grid_lat, grid_lng, datetime_utc)
-#       write_fst(saved_weather, "data/saved_weather.fst", compress = 99)
-#     }
-#   }
-#   return(status)
-# }
-
 fetch_weather <- function(sites, start_date, end_date) {
 
   status <- "ok"
@@ -279,18 +279,22 @@ fetch_weather <- function(sites, start_date, end_date) {
   wx <- saved_weather
   sites <- sites %>% st_as_sf(coords = c("lng", "lat"), crs = 4326, remove = F)
 
+  # for each site see how much weather is needed
   for (i in 1:nrow(sites)) {
     site <- slice(sites, i)
 
-    # already have some weather?
+    # already have some weather? find dates to download
     dates <- if (nrow(wx) > 0) {
       grids <- build_grids(wx)
-      grid_dates <- wx %>%
+      wx_status <- weather_status(wx, start_date, end_date)
+      site <- st_join(site, grids) %>%
+        left_join(wx_status, join_by(grid_id)) %>%
+        replace_na(list(needs_download = TRUE))
+      if (site$needs_download == FALSE) next
+      dates_have <- wx %>%
+        filter(grid_id == site$grid_id) %>%
         summarize(hours = n(), .by = c(grid_id, date)) %>%
-        filter(hours > 18)
-      dates_have <- site %>%
-        st_join(grids) %>%
-        left_join(grid_dates, join_by(grid_id)) %>%
+        filter(hours > 18) %>%
         pull(date)
       as_date(setdiff(dates_need, dates_have))
     } else {
@@ -314,7 +318,6 @@ fetch_weather <- function(sites, start_date, end_date) {
 
   saved_weather <<- wx
   write_fst(saved_weather, "data/saved_weather.fst", compress = 99)
-
   return(status)
 }
 
@@ -690,52 +693,6 @@ gdd_sine <- function(tmin, tmax, base) {
 
 # Data pipeline ----------------------------------------------------------------
 
-#' Summarize downloaded wether data by grid cell and creates sf object
-#' used to intersect site points with existing weather data
-#' @param ibm_hourly hourly weather data from `clean_ibm` function
-#' @param selected_dates list with start and end dates
-build_grids <- function(wx) {
-  req(nrow(wx) > 0)
-  wx %>%
-    distinct(grid_id, grid_lat, grid_lng) %>%
-    rowwise() %>%
-    mutate(geometry = ll_to_grid(grid_lat, grid_lng)) %>%
-    ungroup() %>%
-    st_set_geometry("geometry")
-}
-
-# saved_weather %>% build_grids()
-
-weather_status <- function(wx, start_date = min(wx$date), end_date = max(wx$date)) {
-  req(nrow(wx) > 0)
-  dates_expected <- seq.Date(start_date, end_date, 1)
-  wx %>%
-    filter(date %in% dates_expected) %>%
-    summarize(
-      date_min = min(date),
-      date_max = max(date),
-      days_expected = length(dates_expected),
-      days_actual = n_distinct(date),
-      days_missing = days_expected - days_actual,
-      days_missing_pct = days_missing / days_expected,
-      time_min_expected = ymd_hms(paste(start_date, "00:20:00"), tz = first(time_zone)),
-      time_min_actual = min(datetime_local),
-      time_max_expected = min(
-        now(tzone = first(time_zone)),
-        ymd_hms(paste(end_date, "23:20:00"), tz = first(time_zone))
-      ),
-      time_max_actual = max(datetime_local),
-      hours_expected = as.integer(difftime(time_max_expected, time_min_expected, units = "hours")),
-      hours_actual = n(),
-      hours_missing = hours_expected - hours_actual,
-      hours_missing_pct = hours_missing / hours_expected,
-      hours_stale = as.integer(difftime(now(tzone = first(time_zone)), time_max_actual, units = "hours")),
-      stale = hours_stale > OPTS$ibm_stale_hours,
-      needs_download = stale | days_missing > 0,
-      .by = grid_id
-    )
-}
-
 # weather_status(saved_weather, start_date = ymd("2025-1-1"), end_date = ymd("2025-2-21")) %>% view()
 
 # saved_weather %>% weather_status(today() - 7,today())
@@ -974,72 +931,38 @@ sanitize_loc_names <- function(vec) {
   str_trunc(htmltools::htmlEscape(vec), 20)
 }
 
-# site_tbl_icons <- function(ids) {
-#   link <- function(input, id) {
-#     sprintf("Shiny.setInputValue('%s', '%s', {priority: 'event'})", input, id)
-#   }
-#   sapply(ids, function(id) {
-#     div(
-#       style = "display: inline-flex; gap: 10px;",
-#       a(style = "cursor: pointer;", onclick = link("edit_site", id), icon("edit")),
-#       a(style = "cursor: pointer;", onclick = link("delete_site", id), data_confirm = "are you sure?", icon("trash"))
-#     ) %>% as.character()
-#   })
+# site_action_link <- function(action = c("edit", "save", "trash"), site_id) {
+#   action <- match.arg(action)
+#   event <- sprintf("Shiny.setInputValue('%s_site', '%s', {priority: 'event'})", action, site_id)
+#   if (action == "trash") event <- sprintf("confirm('Delete site %s?') ? %s : false;", site_id, event)
+#   sprintf("<a style='cursor:pointer' onclick=\"%s\">%s</a>", event, as.character(icon(action)))
 # }
 
-# add_site_action_icons <- function(sites) {
-#   link <- function(input, id) {
-#     sprintf("Shiny.setInputValue('%s', '%s', {priority: 'event'})", input, id)
-#   }
-#   sites %>%
-#     mutate(
-#       actions = if_else(
-#         temp,
-#         as.character(a(style = "cursor: pointer;", onclick = link("save_site", id), icon("save"))),
-#         as.character(div(
-#           style = "display: inline-flex; gap: 10px;",
-#           a(style = "cursor: pointer;", onclick = link("edit_site", id), icon("edit")),
-#           a(style = "cursor: pointer;", onclick = link("delete_site", id), icon("trash"))
-#         ))
-#       ) %>% lapply(HTML)
-#     ) %>%
-#     select(-temp)
+site_action_link <- function(action = c("edit", "save", "trash"), site_id) {
+  action <- match.arg(action)
+  sprintf("<a style='cursor:pointer' onclick=\"%sSite(%s);\">%s</a>", action, site_id, as.character(icon(action)))
+}
+
+# site_action_link <- function(action = c("edit", "save", "trash"), site_id) {
+#   action <- match.arg(action)
+#   event <- switch(action,
+#     "edit" = paste0(
+#       sprintf("let newName = prompt('Enter a new name for site %s:', '');", site_id),
+#       sprintf("newName ? Shiny.setInputValue('edit_site', {id: %s, name: newName}, {priority: 'event'}) : false;")
+#     ),
+#     "save" = sprintf("Shiny.setInputValue('save_site', '%s', {priority: 'event'});", site_id),
+#     "trash" = sprintf("confirm('Delete site %s?') ? %s : false;"
+#     )
+#
+#   )
+#
+#
+#     sprintf("Shiny.setInputValue('%s_site', '%s', {priority: 'event'})", action, site_id)
+#   if (action == "trash") event <- sprintf("confirm('Delete site %s?') ? %s : false;", site_id, event)
+#   sprintf("<a style='cursor:pointer' onclick=\"%s\">%s</a>", event, as.character(icon(action)))
 # }
 
-add_site_action_icons <- function(sites) {
-  link <- function(input, id) {
-    sprintf("Shiny.setInputValue('%s', '%s', {priority: 'event'})", input, id)
-  }
-  sites %>%
-    mutate(
-      actions = if_else(
-        temp,
-        as.character(a(style = "cursor: pointer;", onclick = link("save_site", id), icon("save"))),
-        as.character(div(
-          style = "display: inline-flex; gap: 10px;",
-          a(style = "cursor: pointer;", onclick = link("edit_site", id), icon("edit")),
-          a(style = "cursor: pointer;", onclick = link("delete_site", id), icon("trash"))
-        ))
-      ) %>% lapply(HTML)
-    ) %>%
-    select(-temp)
-}
-
-site_action_link <- function(input_id, site_id, icon_type) {
-  action <- sprintf("Shiny.setInputValue('%s', '%s', {priority: 'event'})", input_id, site_id)
-  print(action)
-  sprintf("<a style='cursor:pointer' onclick=%s>%s</a>", action, as.character(icon(icon_type)))
-}
-
-
-# sites
-#
-# site_tbl_icons(c(1, 2, 3))
-#
-# icon("edit")
-# icon("arrow-up")
-# icon("x")
-
+# site_action_link("edit", 1)
 
 
 # Startup ----------------------------------------------------------------------
