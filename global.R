@@ -20,6 +20,7 @@ suppressPackageStartupMessages({
   library(shinyWidgets)
   # library(shinyBS)
   library(shinyjs)
+  library(shinyalert)
   library(htmltools)
 
   library(leaflet)
@@ -239,30 +240,58 @@ build_grids <- function(wx) {
 
 # saved_weather %>% build_grids()
 
+# weather_status <- function(wx, start_date = min(wx$date), end_date = max(wx$date)) {
+#   dates_expected <- seq.Date(start_date, end_date, 1)
+#   wx <- wx %>% filter(date %in% dates_expected)
+#   if (nrow(wx) == 0) return(FALSE)
+#   wx %>%
+#     summarize(
+#       date_min = min(date),
+#       date_max = max(date),
+#       days_expected = length(dates_expected),
+#       days_actual = n_distinct(date),
+#       days_missing = days_expected - days_actual,
+#       days_missing_pct = days_missing / days_expected,
+#       time_min_expected = ymd_hms(paste(start_date, "00:20:00"), tz = first(time_zone)),
+#       time_min_actual = min(datetime_local),
+#       time_max_expected = min(
+#         now(tzone = first(time_zone)),
+#         ymd_hms(paste(end_date, "23:20:00"), tz = first(time_zone))
+#       ),
+#       time_max_actual = max(datetime_local),
+#       hours_expected = as.integer(difftime(time_max_expected, time_min_expected, units = "hours")),
+#       hours_actual = n(),
+#       hours_missing = hours_expected - hours_actual,
+#       hours_missing_pct = hours_missing / hours_expected,
+#       hours_stale = as.integer(difftime(now(tzone = first(time_zone)), time_max_actual, units = "hours")),
+#       stale = hours_stale > OPTS$ibm_stale_hours,
+#       needs_download = stale | days_missing > 0,
+#       .by = grid_id
+#     )
+# }
+
 weather_status <- function(wx, start_date = min(wx$date), end_date = max(wx$date)) {
-  req(nrow(wx) > 0)
   dates_expected <- seq.Date(start_date, end_date, 1)
+  wx <- filter(wx, between(date, start_date, end_date))
+  if (nrow(wx) == 0) return(tibble(grid_id = NA, needs_download = TRUE))
   wx %>%
-    filter(date %in% dates_expected) %>%
     summarize(
+      tz = first_truthy(first(time_zone), "UTC"),
       date_min = min(date),
       date_max = max(date),
       days_expected = length(dates_expected),
       days_actual = n_distinct(date),
       days_missing = days_expected - days_actual,
       days_missing_pct = days_missing / days_expected,
-      time_min_expected = ymd_hms(paste(start_date, "00:20:00"), tz = first(time_zone)),
+      time_min_expected = ymd_hms(paste(start_date, "00:20:00"), tz = tz),
       time_min_actual = min(datetime_local),
-      time_max_expected = min(
-        now(tzone = first(time_zone)),
-        ymd_hms(paste(end_date, "23:20:00"), tz = first(time_zone))
-      ),
+      time_max_expected = min(now(tzone = tz), ymd_hms(paste(end_date, "23:20:00"), tz = tz)),
       time_max_actual = max(datetime_local),
       hours_expected = as.integer(difftime(time_max_expected, time_min_expected, units = "hours")),
       hours_actual = n(),
       hours_missing = hours_expected - hours_actual,
       hours_missing_pct = hours_missing / hours_expected,
-      hours_stale = as.integer(difftime(now(tzone = first(time_zone)), time_max_actual, units = "hours")),
+      hours_stale = as.integer(difftime(now(tzone = tz), time_max_actual, units = "hours")),
       stale = hours_stale > OPTS$ibm_stale_hours,
       needs_download = stale | days_missing > 0,
       .by = grid_id
@@ -720,9 +749,7 @@ build_hourly <- function(ibm_hourly) {
     arrange(grid_lat, grid_lng, datetime_utc) %>%
     mutate(precip_cumulative = cumsum(precip), .after = precip) %>%
     mutate(snow_cumulative = cumsum(snow), .after = snow) %>%
-    mutate(dew_point_depression = abs(temperature - dew_point), .after = dew_point) %>%
-    # km/hr => m/s
-    mutate(across(c(wind_speed, wind_gust), kmh_to_mps))
+    mutate(dew_point_depression = abs(temperature - dew_point), .after = dew_point)
 }
 
 #' Generate daily summary data from hourly weather
@@ -814,7 +841,7 @@ build_disease_from_ma <- function(ma) {
   # calculate disease models from moving averages
   disease <- ma %>%
     mutate(
-      sporecaster_dry_prob = sporecaster_dry(temperature_max_30day, wind_speed_max_30day),
+      sporecaster_dry_prob = sporecaster_dry(temperature_max_30day, kmh_to_mps(wind_speed_max_30day)),
       sporecaster_irrig_30_prob = sporecaster_irrig(temperature_max_30day, relative_humidity_max_30day, "30"),
       sporecaster_irrig_15_prob = sporecaster_irrig(temperature_max_30day, relative_humidity_max_30day, "15"),
       frogeye_leaf_spot_prob = predict_fls(temperature_max_30day, hours_rh_over_80_30day),
@@ -914,13 +941,14 @@ load_sites <- function(fpath) {
     mutate(
       name = sanitize_loc_names(name),
       lat = round(lat, 2),
-      lng = round(lng, 2)
+      lng = round(lng, 2),
     ) %>%
     distinct(name, lat, lng) %>%
     filter(validate_ll(lat, lng))
   if (nrow(df) == 0) stop("No valid locations within service area.")
   df %>%
     mutate(id = row_number(), .before = 1) %>%
+    mutate(temp = FALSE) %>%
     head(OPTS$max_sites)
 }
 
@@ -928,41 +956,30 @@ load_sites <- function(fpath) {
 # load_sites("dev/wisconet stns.csv")
 
 sanitize_loc_names <- function(vec) {
-  str_trunc(htmltools::htmlEscape(vec), 20)
+  str_trunc(htmltools::htmlEscape(vec), 30)
 }
 
-# site_action_link <- function(action = c("edit", "save", "trash"), site_id) {
-#   action <- match.arg(action)
-#   event <- sprintf("Shiny.setInputValue('%s_site', '%s', {priority: 'event'})", action, site_id)
-#   if (action == "trash") event <- sprintf("confirm('Delete site %s?') ? %s : false;", site_id, event)
-#   sprintf("<a style='cursor:pointer' onclick=\"%s\">%s</a>", event, as.character(icon(action)))
-# }
-
-site_action_link <- function(action = c("edit", "save", "trash"), site_id) {
+site_action_link <- function(action = c("edit", "save", "trash"), site_id, site_name = "") {
   action <- match.arg(action)
-  sprintf("<a style='cursor:pointer' onclick=\"%sSite(%s);\">%s</a>", action, site_id, as.character(icon(action)))
+  hovertext = switch(action,
+    edit = "Rename this site",
+    save = "Pin this site to list",
+    trash = "Delete this site"
+  )
+  onclick = switch(action,
+    edit = sprintf("editSite(%s, \"%s\")", site_id, site_name),
+    save = sprintf("saveSite(%s)", site_id),
+    trash = sprintf("trashSite(%s)", site_id)
+  )
+  content <- as.character(switch(action,
+    edit = icon("pen"),
+    save = icon("thumbtack"),
+    trash = icon("trash")
+  ))
+  sprintf("<a style='cursor:pointer' title='%s' onclick='%s'>%s</a>", hovertext, onclick, content)
 }
 
-# site_action_link <- function(action = c("edit", "save", "trash"), site_id) {
-#   action <- match.arg(action)
-#   event <- switch(action,
-#     "edit" = paste0(
-#       sprintf("let newName = prompt('Enter a new name for site %s:', '');", site_id),
-#       sprintf("newName ? Shiny.setInputValue('edit_site', {id: %s, name: newName}, {priority: 'event'}) : false;")
-#     ),
-#     "save" = sprintf("Shiny.setInputValue('save_site', '%s', {priority: 'event'});", site_id),
-#     "trash" = sprintf("confirm('Delete site %s?') ? %s : false;"
-#     )
-#
-#   )
-#
-#
-#     sprintf("Shiny.setInputValue('%s_site', '%s', {priority: 'event'})", action, site_id)
-#   if (action == "trash") event <- sprintf("confirm('Delete site %s?') ? %s : false;", site_id, event)
-#   sprintf("<a style='cursor:pointer' onclick=\"%s\">%s</a>", event, as.character(icon(action)))
-# }
-
-# site_action_link("edit", 1)
+# site_action_link("edit", 1, "foo")
 
 
 # Startup ----------------------------------------------------------------------
@@ -1046,11 +1063,13 @@ OPTS <- lst(
 
   # allowable names for site loading
   site_cols = c(
-    # id = "id",
     name = "name",
+    name = "location",
+    lat = "lat",
     lat = "latitude",
-    lng = "longitude",
-    lng = "long"
+    lng = "lng",
+    lng = "long",
+    lng = "longitude"
   ),
   max_sites = 10,
 

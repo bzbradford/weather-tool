@@ -20,18 +20,42 @@ function initAutocomplete() {
   autocomplete.setFields(['name', 'geometry']);
   autocomplete.addListener('place_changed', function() {
     const place = autocomplete.getPlace();
-    // console.log(place)
+    console.log(place)
     if (!place.geometry) return;
     const loc = place.geometry.location;
     const response = { name: place.name, lat: loc.lat(), lng: loc.lng() }
-    Shiny.setInputValue('searched_loc', response, { priority: 'event' });
+    sendShiny('searched_loc', response);
   });
+}
+
+// get locality name from coordinates
+function getLocalityName(lat, lng, apiKey) {
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${apiKey}`;
+  const inputId = 'locality_name'
+  const loc = { lat: lat, lng: lng, name: 'Clicked point' }
+
+  fetch(url)
+    .then(response => response.json())
+    .then(data => {
+      const addressComponents = data.results[0].address_components;
+      const locality = addressComponents.find(component => 
+        component.types.includes('locality')
+      );
+      const city = locality ? locality.long_name : fallbackName;
+      console.log('Nearest city:', city);
+      loc.name = city
+      sendShiny(inputId, loc)
+    })
+    .catch(error => {
+      console.error('Error:', error)
+      sendShiny(inputId, loc)
+    });
 }
 
 
 //--- Cookie handling ---//
 
-COOKIE_NAME = 'ibm_weather_tool_sites'
+const COOKIE_NAME = 'ibm_weather_tool'
 
 function setCookie(value, name = COOKIE_NAME, days = 30) {
   let expires = '';
@@ -60,7 +84,7 @@ function getCookie(name = COOKIE_NAME) {
 
 function sendCookieToShiny(name = COOKIE_NAME) {
   let value = getCookie(name);
-  Shiny.setInputValue('cookie', value);
+  sendShiny('cookie', value);
   return value;
 }
 
@@ -72,15 +96,23 @@ function deleteCookie(name = COOKIE_NAME) {
 
 //--- Site action buttons ---//
 
-function editSite(site_id) {
-  let newName = prompt(`Enter a new name for site ${site_id}:`, '');
-  if (newName) Shiny.setInputValue('edit_site', { id: site_id, name: newName }, { priority: 'event' });
+function sendShiny(inputId, content) {
+  Shiny.setInputValue(inputId, content, { priority: 'event'} )
+}
+
+function editSite(site_id, site_name = '') {
+  let newName = prompt(`Enter a new name for site ${site_id}:`, site_name);
+  if (newName) sendShiny('edit_site', { id: site_id, name: newName } );
 }
 
 function trashSite(site_id) {
-  if (confirm(`Delete site ${site_id}?`)) Shiny.setInputValue('trash_site', site_id, { priority: 'event' });
+  if (confirm(`Remove site ${site_id}?`)) sendShiny('trash_site', site_id);
 }
 
 function saveSite(site_id) {
-  Shiny.setInputValue('save_site', site_id, { priority: 'event' });
+  sendShiny('save_site', site_id);
+}
+
+function clearSites() {
+  if (confirm('Remove all sites?')) sendShiny('clear_sites', true);
 }

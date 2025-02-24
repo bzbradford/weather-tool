@@ -7,13 +7,11 @@ ui <- fluidPage(
     tags$meta(charset = "UTF-8"),
     tags$meta(name = "description", content = "A tool for downloading hourly weather data for any location in the continental United States"),
     tags$meta(name = "keywords", content = "uw, wisconsin, weather, tool"),
-    tags$link(rel = "preload", href = "https://cdn.wisc.cloud/fonts/uw-rh/0.0.1/redhat-display-latin.v14.woff2", as = "font", type = "font/woff2"),
-    tags$link(rel = "preload", href = "https://cdn.wisc.cloud/fonts/uw-rh/0.0.1/redhat-text-latin.v13.woff2", as = "font", type = "font/woff2"),
     tags$link(rel = "shortcut icon", href = "uw-crest.svg"),
     tags$link(rel = "stylesheet", type = "text/css", href = "style.css"),
     tags$script(src = "script.js"),
     includeHTML("www/google-analytics.html"),
-    useShinyjs()
+    useShinyjs(),
   ),
   tags$header(
     div(class = "uw-title",
@@ -27,12 +25,11 @@ ui <- fluidPage(
     div(class = "column sidebar-container",
       h2("Site selection"),
       div(
+        # div(
+        #   style = "margin-top: 10px;",
+        #   materialSwitch("multi_site", "Multi site mode")
+        # ),
         div(
-          style = "margin-top: 10px;",
-          materialSwitch("multi_site", "Multi site mode")
-        ),
-        div(
-          style = "margin-top: -10px;",
           uiOutput("site_ui"),
           uiOutput("multi_site_ui"),
         ),

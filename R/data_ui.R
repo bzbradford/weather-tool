@@ -48,6 +48,8 @@ dataServer <- function(sites_df, selected_site, wx_data) {
           "gdd" = wx$gdd
         )
 
+        req(nrow(data) > 0)
+
         df <- sites %>%
           left_join(data, join_by(grid_id), relationship = "many-to-many") %>%
           drop_na(grid_id, date) %>%
@@ -101,7 +103,10 @@ dataServer <- function(sites_df, selected_site, wx_data) {
       ## main_ui // renderUI ----
       output$main_ui <- renderUI({
         tagList(
-          p(em("Most values may be shown in either metric or imperial units. Temperature and dew point: °C or °F, precipitation (rain/melted snow): mm or in, snow accumulation: cm or in, relative humidity: %, pressure: mbar or inHg, wind speed: m/s or mph, wind direction: compass degrees (N=0°, E=90°, etc.). Growing degree day base/upper thresholds and accumulations always in Fahrenheit.")),
+          div(
+            style = "margin-top: 10px; margin-bottom: 10px; font-style: italic;",
+            "Most values may be shown in either metric or imperial units. Press the (i) button above for more information."
+          ),
           materialSwitch(
             inputId = ns("metric"),
             label = "Use metric",
@@ -114,7 +119,7 @@ dataServer <- function(sites_df, selected_site, wx_data) {
             choices = OPTS$data_type_choices
           ),
           uiOutput(ns("data_options")),
-          uiOutput(ns("dataset_ui"))
+          uiOutput(ns("dataset_ui")),
         )
       })
 
@@ -125,8 +130,6 @@ dataServer <- function(sites_df, selected_site, wx_data) {
         validate(need(rv$sites_ready, "No sites selected, click on the map or load sites in the sidebar."))
 
         tagList(
-          uiOutput(ns("data_msg")),
-          h4("Data chart"),
           uiOutput(ns("plot_ui")),
           downloadButton(ns("download_data"), "Download dataset")
         )
@@ -152,8 +155,12 @@ dataServer <- function(sites_df, selected_site, wx_data) {
       ## data_msg // renderUI ----
       output$data_msg <- renderUI({
         sites <- wx_data()$sites
-        req(nrow(sites) > 0)
-        req(any(sites$needs_download))
+        hourly <- wx_data()$hourly
+        req(nrow(sites) > 0 && nrow(hourly) > 0 && any(sites$needs_download))
+        # echo(sites)
+        # status <- sites$needs_download
+        # echo(status)
+        # req(any(status))
         span(style = "color: red;", "Some sites are missing data based on your date selections, click 'Fetch weather' to load missing data.")
       })
 
@@ -162,6 +169,7 @@ dataServer <- function(sites_df, selected_site, wx_data) {
         div(
           uiOutput(ns("plot_sites_ui")),
           uiOutput(ns("plot_cols_ui")),
+          uiOutput(ns("data_msg")),
           div(
             class = "plotly-container",
             plotlyOutput(ns("data_plot"))
