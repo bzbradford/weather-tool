@@ -20,14 +20,17 @@ suppressPackageStartupMessages({
   library(shinyWidgets)
   # library(shinyBS)
   library(shinyjs)
+  library(shinyalert)
   library(htmltools)
 
   library(leaflet)
   library(leaflet.extras)
   library(plotly)
+  library(DT)
   # library(gt)
 })
 
+# options(warn = 2)
 
 # Functions --------------------------------------------------------------------
 
@@ -45,7 +48,7 @@ suppressPackageStartupMessages({
 
 # message and print an object to the console for testing
 echo <- function(x) {
-  message(deparse(substitute(x)))
+  message(deparse(substitute(x)), " <", paste(class(x), collapse = ", "), ">")
   print(x)
 }
 
@@ -99,8 +102,8 @@ mbar_to_inHg <- function(x) x / 33.864
 #' @param str input string containing coordinates to parse in form "lat, lng"
 #' @returns named list { lat: numeric, lng: numeric }
 parse_coords <- function(str) {
-  str <- gsub("[ °NW]", "", str)
-  parts <- str_split_1(str, ",")
+  str <- gsub("[ ,\t°NW]", " ", str)
+  parts <- str_split_1(str_squish(str), " ")
   if (length(parts) != 2) stop("Invalid coordinate format.")
   coords <- suppressWarnings(list(
     lat = as.numeric(parts[1]),
@@ -193,10 +196,10 @@ get_ibm <- function(lat, lng, start_date, end_date) {
       resp_body_json(resp, simplifyVector = T) %>% as_tibble()
     }, error = function(e) return(tibble()))
   })
-  weather <- bind_rows(responses)
+  wx <- bind_rows(responses)
   msg <- str_glue("weather for {lat}, {lng} from {start_date} to {end_date} in {Sys.time() - stime}")
-  message(ifelse(nrow(weather) > 0, "OK ==> Got ", "FAIL ==> Could not get "), msg)
-  weather
+  message(ifelse(nrow(wx) > 0, "OK ==> Got ", "FAIL ==> Could not get "), msg)
+  wx
 }
 
 
@@ -219,6 +222,132 @@ clean_ibm <- function(ibm_response) {
     mutate(time_zone = lutz::tz_lookup_coords(grid_lat, grid_lng, warn = F), .after = datetime_utc) %>%
     mutate(datetime_local = with_tz(datetime_utc, first(time_zone)), .by = time_zone, .after = time_zone) %>%
     mutate(date = as_date(datetime_local), .after = datetime_local)
+}
+
+#' Summarize downloaded wether data by grid cell and creates sf object
+#' used to intersect site points with existing weather data
+#' @param ibm_hourly hourly weather data from `clean_ibm` function
+#' @param selected_dates list with start and end dates
+build_grids <- function(wx) {
+  req(nrow(wx) > 0)
+  wx %>%
+    distinct(grid_id, grid_lat, grid_lng) %>%
+    rowwise() %>%
+    mutate(geometry = ll_to_grid(grid_lat, grid_lng)) %>%
+    ungroup() %>%
+    st_set_geometry("geometry")
+}
+
+# saved_weather %>% build_grids()
+
+# weather_status <- function(wx, start_date = min(wx$date), end_date = max(wx$date)) {
+#   dates_expected <- seq.Date(start_date, end_date, 1)
+#   wx <- wx %>% filter(date %in% dates_expected)
+#   if (nrow(wx) == 0) return(FALSE)
+#   wx %>%
+#     summarize(
+#       date_min = min(date),
+#       date_max = max(date),
+#       days_expected = length(dates_expected),
+#       days_actual = n_distinct(date),
+#       days_missing = days_expected - days_actual,
+#       days_missing_pct = days_missing / days_expected,
+#       time_min_expected = ymd_hms(paste(start_date, "00:20:00"), tz = first(time_zone)),
+#       time_min_actual = min(datetime_local),
+#       time_max_expected = min(
+#         now(tzone = first(time_zone)),
+#         ymd_hms(paste(end_date, "23:20:00"), tz = first(time_zone))
+#       ),
+#       time_max_actual = max(datetime_local),
+#       hours_expected = as.integer(difftime(time_max_expected, time_min_expected, units = "hours")),
+#       hours_actual = n(),
+#       hours_missing = hours_expected - hours_actual,
+#       hours_missing_pct = hours_missing / hours_expected,
+#       hours_stale = as.integer(difftime(now(tzone = first(time_zone)), time_max_actual, units = "hours")),
+#       stale = hours_stale > OPTS$ibm_stale_hours,
+#       needs_download = stale | days_missing > 0,
+#       .by = grid_id
+#     )
+# }
+
+weather_status <- function(wx, start_date = min(wx$date), end_date = max(wx$date)) {
+  dates_expected <- seq.Date(start_date, end_date, 1)
+  wx <- filter(wx, between(date, start_date, end_date))
+  if (nrow(wx) == 0) return(tibble(grid_id = NA, needs_download = TRUE))
+  wx %>%
+    summarize(
+      tz = first_truthy(first(time_zone), "UTC"),
+      date_min = min(date),
+      date_max = max(date),
+      days_expected = length(dates_expected),
+      days_actual = n_distinct(date),
+      days_missing = days_expected - days_actual,
+      days_missing_pct = days_missing / days_expected,
+      time_min_expected = ymd_hms(paste(start_date, "00:20:00"), tz = tz),
+      time_min_actual = min(datetime_local),
+      time_max_expected = min(now(tzone = tz), ymd_hms(paste(end_date, "23:20:00"), tz = tz)),
+      time_max_actual = max(datetime_local),
+      hours_expected = as.integer(difftime(time_max_expected, time_min_expected, units = "hours")),
+      hours_actual = n(),
+      hours_missing = hours_expected - hours_actual,
+      hours_missing_pct = hours_missing / hours_expected,
+      hours_stale = as.integer(difftime(now(tzone = tz), time_max_actual, units = "hours")),
+      stale = hours_stale > OPTS$ibm_stale_hours,
+      needs_download = stale | days_missing > 0,
+      .by = grid_id
+    )
+}
+
+#' Update weather for sites list and date range
+#' @param sites sf with site locs
+#' @param date_range list with $start and $end dates
+fetch_weather <- function(sites, start_date, end_date) {
+
+  status <- "ok"
+  dates_need <- seq.Date(start_date, end_date, 1)
+  wx <- saved_weather
+  sites <- sites %>% st_as_sf(coords = c("lng", "lat"), crs = 4326, remove = F)
+
+  # for each site see how much weather is needed
+  for (i in 1:nrow(sites)) {
+    site <- slice(sites, i)
+
+    # already have some weather? find dates to download
+    dates <- if (nrow(wx) > 0) {
+      grids <- build_grids(wx)
+      wx_status <- weather_status(wx, start_date, end_date)
+      site <- st_join(site, grids) %>%
+        left_join(wx_status, join_by(grid_id)) %>%
+        replace_na(list(needs_download = TRUE))
+      if (site$needs_download == FALSE) next
+      dates_have <- wx %>%
+        filter(grid_id == site$grid_id) %>%
+        summarize(hours = n(), .by = c(grid_id, date)) %>%
+        filter(hours > 18) %>%
+        pull(date)
+      as_date(setdiff(dates_need, dates_have))
+    } else {
+      dates_need
+    }
+
+    # get weather if needed
+    if (length(dates) > 0) {
+      resp <- get_ibm(site$lat, site$lng, first(dates) - 1, last(dates) + 1)
+      incProgress(1)
+      if (nrow(resp) == 0) {
+        status <- sprintf("Unable to get some/all weather for %.2f, %.2f from %s to %s.", site$lat, site$lng, first(dates), last(dates))
+        next
+      }
+      new_wx <- clean_ibm(resp)
+      wx <- bind_rows(wx, new_wx) %>%
+        distinct(grid_id, datetime_utc, .keep_all = T) %>%
+        arrange(grid_lat, grid_lng, datetime_utc)
+    }
+  }
+
+  saved_weather <<- wx
+  write_fst(saved_weather, "data/saved_weather.fst", compress = 99)
+  return(status)
 }
 
 
@@ -318,7 +447,9 @@ rename_with_units <- function(df, unit_system = c("metric", "imperial")) {
 # Logistic function to convert logit to probability
 logistic <- function(logit) exp(logit) / (1 + exp(logit))
 
-#' Apothecial sporecaster, dryland model
+#' White mold 'sporecaster', dryland model - Any crop
+#' Risk criteria ?
+#' No risk: Fungicide app in last 14 days, min temp <32F
 #' @param MaxAT_30ma 30-day moving average of daily maximum temperature, Celsius
 #' @param MaxWS_30ma 30-day moving average of daily maximum wind speed, m/s
 #' @returns probability of spore presence
@@ -327,7 +458,17 @@ sporecaster_dry <- function(MaxAT_30ma, MaxWS_30ma) {
   logistic(mu)
 }
 
-#' Apothecial sporecaster, irrigated model
+# expand_grid(temp = 0:40, wind = 0:20) %>%
+#   mutate(prob = sporecaster_dry(temp, wind)) %>%
+#   ggplot(aes(x = temp, y = wind, fill = prob)) +
+#   geom_tile() +
+#   scale_fill_distiller(palette = "Spectral") +
+#   coord_cartesian(expand = F)
+
+
+#' White mold 'sporecaster', irrigated model - Any crop
+#' Risk criteria ?
+#' No risk: Fungicide app in last 14 days, min temp <32F
 #' @param MaxAT_30MA Maximum daily temperature, 30-day moving average, Celsius
 #' @param MaxRH_30ma Maximum daily relative humidity, 30-day moving average, 0-100%
 #' @param spacing Row spacing, either "15" or "30", inches
@@ -338,8 +479,20 @@ sporecaster_irrig <- function(MaxAT_30MA, MaxRH_30ma, spacing = c("15", "30")) {
   logistic(mu)
 }
 
-#' Frogeye leaf spot model
-#' use when growth stage within R1-R5 and no fungicide in last 14 days
+# expand_grid(temp = 15:40, rh = seq(50, 100, 5), spacing = c("15", "30")) %>%
+#   rowwise() %>%
+#   mutate(prob = sporecaster_irrig(temp, rh, spacing)) %>%
+#   ggplot(aes(x = temp, y = rh, fill = prob)) +
+#   geom_tile() +
+#   facet_wrap(~spacing, ncol = 1) +
+#   scale_fill_distiller(palette = "Spectral") +
+#   coord_cartesian(expand = F)
+
+
+#' Frogeye leaf spot model - Soy
+#' Use when growth stage R1 - R5
+#' Risk criteria: High >=50%, Medium >=40%, Low >0%
+#' No risk: Fungicide in last 14 days, temperature <32F
 #' @param MaxAT_30ma Maximum daily temperature, 30-day moving average, Celsius
 #' @param HrsRH80_30ma Daily hours RH > 80%, 30-day moving average, 0-24 hours
 #' @returns probability of spore presence
@@ -348,8 +501,19 @@ predict_fls <- function(MaxAT_30ma, HrsRH80_30ma) {
   logistic(mu)
 }
 
-#' Gray leaf spot model
-#' use when growth stage V10-R3 and no fungicide in last 14 days
+# expand_grid(temp = 0:40, hours = 0:24) %>%
+#   mutate(prob = predict_fls(temp, hours)) %>%
+#   ggplot(aes(x = temp, y = hours, fill = prob)) +
+#   geom_tile() +
+#   scale_fill_distiller(palette = "Spectral") +
+#   coord_cartesian(expand = F)
+
+
+#' Gray leaf spot model - Corn
+#' Use when growth stage V10-R3
+#' Risk criteria: High >=60%, Medium >=40%, Low >0%
+#' No risk: Fungicide app in last 14 days, min temp <32F
+#' @returns probability of spore presence
 #' @param MinAT_21ma Minimum daily temperature, 21-day moving average, Celsius
 #' @param MinDP_30ma Minimum dew point temperature, 30-day moving average, Celsius
 #' @returns probability of spore presence
@@ -358,7 +522,18 @@ predict_gls <- function(MinAT_21ma, MinDP_30ma) {
   logistic(mu)
 }
 
-#' Tarspot model
+# expand_grid(temp = 0:40, dp = 0:15) %>%
+#   mutate(prob = predict_gls(temp, dp)) %>%
+#   ggplot(aes(x = temp, y = dp, fill = prob)) +
+#   geom_tile() +
+#   scale_fill_distiller(palette = "Spectral") +
+#   coord_cartesian(expand = F)
+
+
+#' Tarspot 'tarspotter' - Corn
+#' Use when growth stage V10 - R3
+#' Risk criteria: High >=35%, Medium >=20%, Low >0%
+#' No risk: Fungicide in last 14 days, temperature <32F
 #' @param MeanAT_30ma Mean daily temperature, 30-day moving average, Celsius
 #' @param MaxRH_30ma Maximum daily relative humidity, 30-day moving average, 0-100%
 #' @param HrsRH90Night_14ma Nighttime hours RH > 90%, 14-day moving average, 0-24 hours
@@ -368,6 +543,14 @@ predict_tarspot <- function(MeanAT_30ma, MaxRH_30ma, HrsRH90Night_14ma) {
   mu2 <- 20.35950 - 0.91093 * MeanAT_30ma - 0.29240 * HrsRH90Night_14ma
   (logistic(mu1) + logistic(mu2)) / 2
 }
+
+# expand_grid(temp = 10:40, rh = seq(0, 100, 5), hours = 0:24) %>%
+#   mutate(prob = predict_tarspot(temp, rh, hours)) %>%
+#   ggplot(aes(x = temp, y = rh, fill = prob)) +
+#   geom_tile() +
+#   facet_wrap(~hours) +
+#   scale_fill_distiller(palette = "Spectral") +
+#   coord_cartesian(expand = F)
 
 
 # Vegetable Disease Models -----------------------------------------------------
@@ -411,27 +594,16 @@ pday <- function(temp) {
 #' - https://ipm.ucanr.edu/DISEASE/DATABASE/potatolateblight.html
 #' More information: https://vegpath.plantpath.wisc.edu/diseases/potato-late-blight/
 #' @param temp Mean temperature during hours where RH > 90%, Celsius
-#' @param hours Number of hours where RH > 90%
+#' @param h Number of hours where RH > 90%
 #' @returns numeric 0-4 disease severity values
-late_blight_dsv <- function(temp, hours) {
+late_blight_dsv <- function(temp, h) {
   case_when(
-    is.na(temp) | is.na(hours) ~ 0,
-    temp < 7.2 ~ 0,
-    temp <= 11.6 ~
-      (hours > 21) +
-      (hours > 18) +
-      (hours > 15),
-    temp <= 15 ~
-      (hours > 21) +
-      (hours > 18) +
-      (hours > 15) +
-      (hours > 12),
-    temp <= 26.6 ~
-      (hours > 18) +
-      (hours > 15) +
-      (hours > 12) +
-      (hours > 9),
-    T ~ 0
+    is.na(temp) | is.na(h) ~ 0,
+    temp <   7.2 ~ 0,
+    temp <= 11.6 ~ (h > 21) + (h > 18) + (h > 15),
+    temp <= 15.0 ~ (h > 21) + (h > 18) + (h > 15) + (h > 12),
+    temp <= 26.6 ~ (h > 18) + (h > 15) + (h > 12) + (h > 9),
+    temp >  26.6 ~ 0
   )
 }
 
@@ -445,31 +617,16 @@ late_blight_dsv <- function(temp, hours) {
 
 #' Carrot foliar disease (Alternaria)
 #' @param temp Mean temperature during hours where RH > 90%, Celsius
-#' @param hours Number of hours where RH > 90%
+#' @param h Number of hours where RH > 90%
 #' @returns numeric 0-4 dsv
-carrot_foliar_dsv <- function(temp, hours) {
+carrot_foliar_dsv <- function(temp, h) {
   case_when(
-    is.na(temp) | is.na(hours) ~ 0,
-    temp < 13 ~ 0,
-    temp <= 18 ~
-      (hours > 20) +
-      (hours > 15) +
-      (hours > 7),
-    temp <= 21 ~
-      (hours > 22) +
-      (hours > 15) +
-      (hours > 8) +
-      (hours > 4),
-    temp <= 26 ~
-      (hours > 20) +
-      (hours > 12) +
-      (hours > 5) +
-      (hours > 2),
-    T ~
-      (hours > 22) +
-      (hours > 15) +
-      (hours > 8) +
-      (hours > 3)
+    is.na(temp) | is.na(h) ~ 0,
+    temp <  13 ~ 0,
+    temp <= 18 ~ (h > 20) + (h > 15) + (h > 7),
+    temp <= 21 ~ (h > 22) + (h > 15) + (h > 8) + (h > 4),
+    temp <= 26 ~ (h > 20) + (h > 12) + (h > 5) + (h > 2),
+    temp >  26 ~ (h > 22) + (h > 15) + (h > 8) + (h > 3)
   )
 }
 
@@ -485,73 +642,39 @@ carrot_foliar_dsv <- function(temp, hours) {
 #' based on https://apsjournals.apsnet.org/doi/abs/10.1094/PDIS.1998.82.7.716
 #' more information: https://vegpath.plantpath.wisc.edu/diseases/carrot-alternaria-and-cercospora-leaf-blights/
 #' @param temp Mean temperature during hours where RH > 90%, Celsius, converted to Fahrenheit internally
-#' @param hours Number of hours where RH > 90%
+#' @param h Number of hours where RH > 90%
 #' @returns 0-7 div
-cercospora_div <- function(temp, hours) {
+cercospora_div <- function(temp, h) {
   temp <- c_to_f(temp)
-  mapply(
-    function(temp, hours) {
-      if (is.na(temp) || is.na(hours)) return(0)
-      if (temp < 60) return(0)
-      if (temp <= 61) {
-        return(if (hours <= 21) 0 else 1)
-      } else if (temp <= 62) {
-        return(if (hours <= 19) 0 else if (hours <= 22) 1 else 2)
-      } else if (temp <= 63) {
-        return(if (hours <= 16) 0 else if (hours <= 19) 1 else if (hours <= 21) 2 else 3)
-      } else if (temp <= 64) {
-        return(if (hours <= 13) 0 else if (hours <= 15) 1 else if (hours <= 18) 2
-          else if (hours <= 20) 3 else if (hours <= 23) 4 else 5)
-      } else if (temp <= 65) {
-        return(if (hours <= 6) 0 else if (hours <= 8) 1 else if (hours <= 12) 2
-          else if (hours <= 18) 3 else if (hours <= 21) 4 else 5)
-      } else if (temp <= 71) {
-        return(if (hours <= 3) 0 else if (hours <= 6) 1 else if (hours <= 10) 2
-          else if (hours <= 14) 3 else if (hours <= 18) 4 else if (hours <= 21) 5 else 6)
-      } else if (temp <= 72) {
-        return(if (hours <= 2) 0 else if (hours <= 6) 1 else if (hours <= 9) 2
-          else if (hours <= 13) 3 else if (hours <= 17) 4 else if (hours <= 20) 5 else 6)
-      } else if (temp <= 73) {
-        return(if (hours <= 1) 0 else if (hours <= 6) 1 else if (hours <= 9) 2
-          else if (hours <= 12) 3 else if (hours <= 16) 4 else if (hours <= 19) 5 else 6)
-      } else if (temp <= 76) {
-        return(if (hours <= 5) 1 else if (hours <= 9) 2 else if (hours <= 11) 3
-          else if (hours <= 16) 4 else if (hours <= 18) 5 else if (hours <= 23) 6 else 7)
-      } else if (temp <= 77) {
-        return(if (hours <= 5) 1 else if (hours <= 8) 2 else if (hours <= 12) 3
-          else if (hours <= 15) 4 else if (hours <= 18) 5 else if (hours <= 22) 6 else 7)
-      } else if (temp <= 78) {
-        return(if (hours <= 5) 1 else if (hours <= 8) 2 else if (hours <= 11) 3
-          else if (hours <= 14) 4 else if (hours <= 17) 5 else if (hours <= 20) 6 else 7)
-      } else if (temp <= 79) {
-        return(if (hours <= 4) 1 else if (hours <= 7) 2 else if (hours <= 9) 3
-          else if (hours <= 12) 4 else if (hours <= 14) 5 else if (hours <= 17) 6 else 7)
-      } else if (temp <= 80) {
-        return(if (hours <= 3) 1 else if (hours <= 6) 2 else if (hours <= 8) 3
-          else if (hours <= 10) 4 else if (hours <= 12) 5 else if (hours <= 15) 6 else 7)
-      } else if (temp <= 81) {
-        return(if (hours <= 2) 1 else if (hours <= 4) 2 else if (hours <= 6) 3
-          else if (hours <= 7) 4 else if (hours <= 9) 5 else if (hours <= 11) 6 else 7)
-      } else if (temp <= 82) {
-        return(if (hours <= 2) 1 else if (hours <= 4) 2 else if (hours <= 5) 3
-          else if (hours <= 7) 4 else if (hours <= 8) 5 else if (hours <= 10) 6 else 7)
-      } else {
-        return(if (hours <= 2) 1 else if (hours <= 4) 2 else if (hours <= 5) 3
-          else if (hours <= 7) 4 else if (hours <= 8) 5 else if (hours <= 9) 6 else 7)
-      }
-    },
-    temp,
-    hours
+  case_when(
+    is.na(temp) | is.na(h) ~ 0,
+    temp <= 60 ~ 0,
+    temp <= 61 ~ (h > 21),
+    temp <= 62 ~ (h > 19) + (h > 22),
+    temp <= 63 ~ (h > 16) + (h > 19) + (h > 21),
+    temp <= 64 ~ (h > 13) + (h > 15) + (h > 18) + (h > 20) + (h > 23),
+    temp <= 65 ~ (h > 6) + (h > 8) + (h > 12) + (h > 18) + (h > 21),
+    temp <= 71 ~ (h > 3) + (h > 6) + (h > 10) + (h > 14) + (h > 18) + (h > 21),
+    temp <= 72 ~ (h > 2) + (h > 6) + (h > 9) + (h > 13) + (h > 17) + (h > 20),
+    temp <= 73 ~ (h > 1) + (h > 6) + (h > 9) + (h > 12) + (h > 16) + (h > 19),
+    temp <= 76 ~ 1 + (h > 5) + (h > 9) + (h > 11) + (h > 16) + (h > 18) + (h > 23),
+    temp <= 77 ~ 1 + (h > 5) + (h > 8) + (h > 12) + (h > 15) + (h > 18) + (h > 22),
+    temp <= 78 ~ 1 + (h > 5) + (h > 8) + (h > 11) + (h > 14) + (h > 17) + (h > 20),
+    temp <= 79 ~ 1 + (h > 4) + (h > 7) + (h > 9) + (h > 12) + (h > 14) + (h > 17),
+    temp <= 80 ~ 1 + (h > 3) + (h > 6) + (h > 8) + (h > 10) + (h > 12) + (h > 15),
+    temp <= 81 ~ 1 + (h > 2) + (h > 4) + (h > 6) + (h > 7) + (h > 9) + (h > 11),
+    temp <= 82 ~ 1 + (h > 2) + (h > 4) + (h > 5) + (h > 7) + (h > 8) + (h > 10),
+    temp >  82 ~ 1 + (h > 2) + (h > 4) + (h > 5) + (h > 7) + (h > 8) + (h > 9)
   )
 }
 
-# test
 # expand_grid(temp = 15:30, hours = 0:24) %>%
-#   mutate(dsv = cercospora_div(temp, hours)) %>%
+#   mutate(dsv = cercospora_div(temp, hours), temp = c_to_f(temp)) %>%
 #   ggplot(aes(x = temp, y = hours, fill = dsv)) +
 #   geom_tile() +
 #   scale_fill_viridis_c() +
 #   coord_cartesian(expand = F)
+
 
 
 # Growing degree days ----------------------------------------------------------
@@ -588,32 +711,20 @@ gdd_sine <- function(tmin, tmax, base) {
   }, tmin, tmax, base)
 }
 
+# expand_grid(tmin = 0:30, tmax = 0:30) %>%
+#   filter(tmax >= tmin) %>%
+#   mutate(gdd = gdd_sine(tmin, tmax, 10)) %>%
+#   ggplot(aes(x = tmin, y = tmax, fill = gdd)) +
+#   geom_tile() +
+#   scale_fill_viridis_c() +
+#   coord_cartesian(expand = F)
+
 
 # Data pipeline ----------------------------------------------------------------
 
-#' Summarize downloaded wether data by grid cell and creates sf object
-#' used to intersect site points with existing weather data
-#' @param ibm_hourly hourly weather data from `clean_ibm` function
-build_grids <- function(ibm_hourly) {
-  ibm_hourly %>%
-    summarize(
-      date_min = min(date),
-      date_max = max(date),
-      days_expected = as.integer(max(date) - min(date)) + 1,
-      days_actual = n_distinct(date),
-      days_missing = days_expected - days_actual,
-      days_missing_pct = days_missing / days_actual,
-      hours_expected = days_expected * 24,
-      hours_actual = n(),
-      hours_missing = hours_expected - hours_actual,
-      hours_missing_pct = hours_missing / hours_actual,
-      .by = c(grid_id, grid_lat, grid_lng)
-    ) %>%
-    rowwise() %>%
-    mutate(geometry = ll_to_grid(grid_lat, grid_lng)) %>%
-    ungroup() %>%
-    st_set_geometry("geometry")
-}
+# weather_status(saved_weather, start_date = ymd("2025-1-1"), end_date = ymd("2025-2-21")) %>% view()
+
+# saved_weather %>% weather_status(today() - 7,today())
 
 #' Creates the working hourly weather dataset from cleaned ibm response
 #' @param ibm_hourly hourly weather data from `clean_ibm` function
@@ -638,9 +749,7 @@ build_hourly <- function(ibm_hourly) {
     arrange(grid_lat, grid_lng, datetime_utc) %>%
     mutate(precip_cumulative = cumsum(precip), .after = precip) %>%
     mutate(snow_cumulative = cumsum(snow), .after = snow) %>%
-    mutate(dew_point_depression = abs(temperature - dew_point), .after = dew_point) %>%
-    # km/hr => m/s
-    mutate(across(c(wind_speed, wind_gust), kmh_to_mps))
+    mutate(dew_point_depression = abs(temperature - dew_point), .after = dew_point)
 }
 
 #' Generate daily summary data from hourly weather
@@ -732,18 +841,12 @@ build_disease_from_ma <- function(ma) {
   # calculate disease models from moving averages
   disease <- ma %>%
     mutate(
-      sporecaster_dry_probability =
-        sporecaster_dry(temperature_max_30day, wind_speed_max_30day),
-      sporecaster_irrig_30_probability =
-        sporecaster_irrig(temperature_max_30day, relative_humidity_max_30day, "30"),
-      sporecaster_irrig_15_probability =
-        sporecaster_irrig(temperature_max_30day, relative_humidity_max_30day, "15"),
-      frogeye_leaf_spot_probability =
-        predict_fls(temperature_max_30day, hours_rh_over_80_30day),
-      gray_leaf_spot_probability =
-        predict_gls(temperature_min_21day, dew_point_min_30day),
-      tarspot_probability =
-        predict_tarspot(temperature_mean_30day, relative_humidity_max_30day, hours_rh_over_90_night_14day),
+      sporecaster_dry_prob = sporecaster_dry(temperature_max_30day, kmh_to_mps(wind_speed_max_30day)),
+      sporecaster_irrig_30_prob = sporecaster_irrig(temperature_max_30day, relative_humidity_max_30day, "30"),
+      sporecaster_irrig_15_prob = sporecaster_irrig(temperature_max_30day, relative_humidity_max_30day, "15"),
+      frogeye_leaf_spot_prob = predict_fls(temperature_max_30day, hours_rh_over_80_30day),
+      gray_leaf_spot_prob = predict_gls(temperature_min_21day, dew_point_min_30day),
+      tarspot_prob = predict_tarspot(temperature_mean_30day, relative_humidity_max_30day, hours_rh_over_90_night_14day),
       .keep = "none"
     )
 
@@ -816,12 +919,77 @@ build_gdd_from_daily <- function(daily) {
 }
 
 
+
+# Helper functions --------------------------------------------------------
+
+create_id <- function(ids) {
+  ids <- as.integer(ids)
+  possible_ids <- 1:(length(ids) + 1)
+  setdiff(possible_ids, ids)
+}
+
+# try read sites from csv
+load_sites <- function(fpath) {
+  df <- read_csv(fpath, col_types = "c", show_col_types = F)
+  if (nrow(df) == 0) stop("File was empty")
+  df <- df %>%
+    clean_names() %>%
+    select(any_of(OPTS$site_cols)) %>%
+    drop_na()
+  if (!(all(c("name", "lat", "lng") %in% names(df)))) stop("File did not contain [name] [lat] [lng] columns.")
+  df <- df %>%
+    mutate(
+      name = sanitize_loc_names(name),
+      lat = round(lat, 2),
+      lng = round(lng, 2),
+    ) %>%
+    distinct(name, lat, lng) %>%
+    filter(validate_ll(lat, lng))
+  if (nrow(df) == 0) stop("No valid locations within service area.")
+  df %>%
+    mutate(id = row_number(), .before = 1) %>%
+    mutate(temp = FALSE) %>%
+    head(OPTS$max_sites)
+}
+
+# load_sites("data/example-sites.csv")
+# load_sites("dev/wisconet stns.csv")
+
+sanitize_loc_names <- function(vec) {
+  str_trunc(htmltools::htmlEscape(vec), 30)
+}
+
+site_action_link <- function(action = c("edit", "save", "trash"), site_id, site_name = "") {
+  action <- match.arg(action)
+  hovertext = switch(action,
+    edit = "Rename this site",
+    save = "Pin this site to list",
+    trash = "Delete this site"
+  )
+  onclick = switch(action,
+    edit = sprintf("editSite(%s, \"%s\")", site_id, site_name),
+    save = sprintf("saveSite(%s)", site_id),
+    trash = sprintf("trashSite(%s)", site_id)
+  )
+  content <- as.character(switch(action,
+    edit = icon("pen"),
+    save = icon("thumbtack"),
+    trash = icon("trash")
+  ))
+  sprintf("<a style='cursor:pointer' title='%s' onclick='%s'>%s</a>", hovertext, onclick, content)
+}
+
+# site_action_link("edit", 1, "foo")
+
+
 # Startup ----------------------------------------------------------------------
 
 ## Load files ----
 
 saved_weather <- if (file.exists("data/saved_weather.fst")) {
   as_tibble(read_fst("data/saved_weather.fst"))
+} else {
+  tibble()
 }
 
 # EPSG 4326 for use in Leaflet
@@ -856,6 +1024,8 @@ OPTS <- lst(
     "iconCodeExtended",
     "drivingDifficultyIndex"
   ),
+  # how old should weather be before allowing a refresh?
+  ibm_stale_hours = 3,
 
   # dates
   earliest_date = make_date(2015, 1, 1),
@@ -893,12 +1063,13 @@ OPTS <- lst(
 
   # allowable names for site loading
   site_cols = c(
-    id = "id",
     name = "name",
     name = "location",
+    lat = "lat",
     lat = "latitude",
-    lng = "longitude",
-    lng = "long"
+    lng = "lng",
+    lng = "long",
+    lng = "longitude"
   ),
   max_sites = 10,
 

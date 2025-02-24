@@ -7,13 +7,11 @@ ui <- fluidPage(
     tags$meta(charset = "UTF-8"),
     tags$meta(name = "description", content = "A tool for downloading hourly weather data for any location in the continental United States"),
     tags$meta(name = "keywords", content = "uw, wisconsin, weather, tool"),
-    tags$link(rel = "preload", href = "https://cdn.wisc.cloud/fonts/uw-rh/0.0.1/redhat-display-latin.v14.woff2", as = "font", type = "font/woff2"),
-    tags$link(rel = "preload", href = "https://cdn.wisc.cloud/fonts/uw-rh/0.0.1/redhat-text-latin.v13.woff2", as = "font", type = "font/woff2"),
     tags$link(rel = "shortcut icon", href = "uw-crest.svg"),
     tags$link(rel = "stylesheet", type = "text/css", href = "style.css"),
     tags$script(src = "script.js"),
     includeHTML("www/google-analytics.html"),
-    useShinyjs()
+    useShinyjs(),
   ),
   tags$header(
     div(class = "uw-title",
@@ -26,11 +24,24 @@ ui <- fluidPage(
   div(class = "main-container",
     div(class = "column sidebar-container",
       h2("Site selection"),
-      div(class = "flex-down",
-        materialSwitch("multi_site", "Multi site mode"),
-        uiOutput("site_ui"),
-        uiOutput("date_ui"),
-        uiOutput("action_ui")
+      div(
+        # div(
+        #   style = "margin-top: 10px;",
+        #   materialSwitch("multi_site", "Multi site mode")
+        # ),
+        div(
+          uiOutput("site_ui"),
+          uiOutput("multi_site_ui"),
+        ),
+        div(
+          style = "margin-top: 20px;",
+          uiOutput("date_ui"),
+        ),
+        div(
+          style = "margin-top: 20px;",
+          uiOutput("action_ui"),
+          uiOutput("status_ui")
+        )
       )
     ),
     div(class = "column map-container",
@@ -41,8 +52,10 @@ ui <- fluidPage(
       )
     ),
     div(class = "column data-container",
-      h2("Data"),
-      uiOutput("data_ui")
+      tabsetPanel(
+        tabPanel("View data", dataUI()),
+        tabPanel("Disease risk", riskUI())
+      )
     )
   ),
   tags$footer(

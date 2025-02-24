@@ -1,5 +1,9 @@
 Use this tool to easily download hourly weather data for any point in the United States and Canada (below 60°N latitude). Weather data is provided by a subscription to IBM's Environmental Intelligence Suite API. From this hourly weather data, we compute daily values, moving averages, growing degree days, and selected plant disease risk values.
 
+### Units
+
+Most values can be shown in either imperial or metric units. Temperature and dew point: °C or °F, precipitation (rain/melted snow): mm or in, snow accumulation: cm or in, relative humidity: %, pressure: mbar or inHg, wind speed: km/h or mph, wind direction: compass degrees (N=0°, E=90°, etc.). Growing degree day base/upper thresholds and accumulations always in Fahrenheit.
+
 ### Hourly data
 
 Hourly data includes the timestamp in UTC and an adjustment to local time based on the timezone associated with the GPS coordinates. This is accomplished using the `tz_lookup_coords` function from the `lutz` package. This method may not correctly assign the time zone at timezone borders. Hourly weather parameters include air temperature, dew point, dew point depression (difference between air temperature and dew point), relative humidity, precipitation, snow accumulation, wind speed, wind gusts, wind direction, barometric pressure (mean sea level), and pressure change since the previous hour.
