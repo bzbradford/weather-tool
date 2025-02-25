@@ -126,8 +126,8 @@ dataServer <- function(sites_df, selected_site, wx_data) {
       ## dataset_ui // renderUI ----
       # TODO: this validation still gets locked out by the reactives
       output$dataset_ui <- renderUI({
-        validate(need(rv$weather_ready, "No weather data downloaded yet for the selected dates. Click 'Fetch Weather' to download."))
         validate(need(rv$sites_ready, "No sites selected, click on the map or load sites in the sidebar."))
+        validate(need(rv$weather_ready, "No weather data downloaded yet for the selected dates. Click 'Fetch Weather' to download."))
 
         tagList(
           uiOutput(ns("plot_ui")),

@@ -36,16 +36,6 @@ suppressPackageStartupMessages({
 
 ## Utility ----
 
-# ternary operator
-# `?` <- function(x, y) {
-#   eval(
-#     sapply(
-#       strsplit(deparse(substitute(y)), ":"),
-#       function(e) parse(text = e)
-#     )[[2 - shiny::isTruthy(x)]]
-#   )
-# }
-
 # message and print an object to the console for testing
 echo <- function(x) {
   message(deparse(substitute(x)), " <", paste(class(x), collapse = ", "), ">")

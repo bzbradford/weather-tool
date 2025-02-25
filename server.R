@@ -130,17 +130,28 @@ server <- function(input, output, session) {
   ## wx_data ----
   # will be blocked when no weather
   # will return only sites/dates/hourly when no weather in date range
+
+  # these inputs uniquely determine the weather data output
+  wx_hash <- reactive({
+    list(
+      weather = rlang::hash(rv$weather),
+      sites = rlang::hash(rv$sites),
+      start_date = input$start_date,
+      end_date = input$end_date
+    )
+  })
+
   wx_data <- reactive({
-    wx_raw <- rv$weather
+    weather <- rv$weather
     sites <- sites_with_status()
     dates <- selected_dates()
-
-    req(nrow(wx_raw) > 0)
+    req(nrow(weather) > 0)
+    req(nrow(sites) > 0)
 
     wx <- list()
     wx$sites <- sites
     wx$dates <- dates
-    wx$hourly <- wx_raw %>%
+    wx$hourly <- weather %>%
       filter(grid_id %in% sites$grid_id) %>%
       filter(between(date, dates$start, dates$end)) %>%
       build_hourly()
@@ -158,7 +169,7 @@ server <- function(input, output, session) {
     wx$gdd <- build_gdd_from_daily(wx$daily)
 
     wx
-  })
+  }) %>% bindCache(wx_hash())
 
 
   ## Cookie handling ----
@@ -172,7 +183,7 @@ server <- function(input, output, session) {
     runjs("deleteCookie()")
   }
 
-  # on load read cookie data
+  # on load read cookie data then start cookie writer
   observe({
     runjs("sendCookieToShiny()")
 
@@ -186,7 +197,7 @@ server <- function(input, output, session) {
     })
   })
 
-  # parse sites from cookie data
+  ### Parse sites from cookie ----
   observeEvent(input$cookie, {
     cookie <- req(input$cookie)
     tryCatch({
@@ -202,6 +213,7 @@ server <- function(input, output, session) {
       fit_sites()
       showNotification(paste("Loaded", nrow(sites), ifelse(nrow(sites) == 1, "site", "sites"), "from a previous session."))
     }, error = function(e) {
+      message("Failed to read sites from cookie: ", e)
       delete_cookie()
     })
   })
@@ -245,7 +257,7 @@ server <- function(input, output, session) {
       "Change the name of your pinned sites using the pen icon. Click on the map or use the search boxes to add another location."
     }
     div(
-      style = "font-size:small; font-style:italic;",
+      style = "font-style:italic;",
       text
     )
   })
@@ -372,11 +384,17 @@ server <- function(input, output, session) {
     div(
       style = "margin-top: 10px;",
       tags$label("Upload csv"), br(),
-      em("Upload a csv with columns: name, lat/latitude, lng/long/longitude. Latitude and longitude must be in +/- decimal degrees. Maximum of 10 sites."),
-      fileInput(
-        inputId = "sites_csv",
-        label = NULL,
-        accept = ".csv"
+      div(
+        style = "font-style: italic;",
+        "Upload a csv with columns: name, lat/latitude, lng/long/longitude. Latitude and longitude must be in +/- decimal degrees. Maximum of 10 sites."
+      ),
+      div(
+        style = "margin-top: 10px;",
+        fileInput(
+          inputId = "sites_csv",
+          label = NULL,
+          accept = ".csv"
+        )
       ),
       { if (!is.null(rv$upload_msg)) div(class = "shiny-error", rv$upload_msg) }
     )
@@ -411,7 +429,6 @@ server <- function(input, output, session) {
   ### Handle clear_sites button ----
   observeEvent(input$clear_sites, {
     shinyalert(
-      # title = "Clear sites?",
       text = "Are you sure you want to delete all your sites?",
       type = "warning",
       closeOnClickOutside = TRUE,
@@ -721,11 +738,10 @@ server <- function(input, output, session) {
   ## Show site markers ----
   observe({
     map <- leafletProxy("map")
-    # wx <- selected_weather()
     wx <- rv$weather
     sites <- rv$sites
-
-    clearGroup(map, "sites")
+    map %>% clearGroup("sites")
+    req(nrow(sites) > 0)
 
     # determine site icons
     sites <- if (nrow(wx) == 0) {
@@ -733,8 +749,6 @@ server <- function(input, output, session) {
     } else {
       sites_with_status()
     }
-
-    req(nrow(sites) > 0)
 
     sites <- sites %>%
       mutate(
@@ -903,7 +917,7 @@ server <- function(input, output, session) {
     if (rv$selected_site != id) rv$selected_site <- id
     if (site$temp == TRUE) sites$temp[id] <- FALSE
     rv$sites <- sites
-    fly_to(marker)
+    # fly_to(marker)
   }) %>%
     bindEvent(input$map_marker_click$.nonce)
 
