@@ -13,8 +13,8 @@ server <- function(input, output, session) {
     # make sure it has all the attributes
     stopifnot(all(names(sites_template) %in% names(loc)))
     loc <- loc[names(loc) %in% names(sites_template)]
-    loc$lat <- round(loc$lat, 4)
-    loc$lng <- round(loc$lng, 4)
+    loc$lat <- loc$lat
+    loc$lng <- loc$lng
     req(validate_ll(loc$lat, loc$lng))
     loc
   }

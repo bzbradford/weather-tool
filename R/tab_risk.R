@@ -158,40 +158,52 @@ riskServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
             enframe(models, value = "model"),
             join_by(name)
           )
-        # echo(disease_data)
         site_data <- sites %>%
           st_drop_geometry() %>%
           select(site_label, grid_id) %>%
           left_join(disease_data, join_by(grid_id)) %>%
-          mutate(name = fct_inorder(name)) %>%
-          mutate(assign_risk(first(model), value), .by = c(site_label, model))
+          mutate(name = fct_inorder(name))
         site_labels <- unique(sites$site_label)
 
-        elems <- lapply(site_labels, function(label) {
-          df <- site_data %>% filter(site_label == !!label)
-          last_value <- df %>%
-            filter(date == max(date)) %>%
-            mutate(risk_label = sprintf("%s: %s (%.0f%%)", name, risk, value * 100))
-          risk_date <- first(last_value$date)
-          risk_info <- paste(last_value$risk_label, collapse = ", ")
 
-          div(
-            style = "border: 1px solid hsl(210, 40%, 80%); border-radius: 5px;",
-            div(
-              style = "background: hsl(210, 40%, 95%); padding: 5px 10px; font-size: large; font-weight: bold; border-radius: 5px;",
-              label
-            ),
-            div(
-              style = "background: white; padding: 5px 10px; border-radius: 5px;",
-              disease_plot(
-                data = df,
-                xrange = c(dates$start, dates$end)
-              ),
+        elems <- lapply(site_labels, function(label) {
+          df <- site_data %>%
+            filter(site_label == !!label, !is.na(grid_id))
+
+          content <- if (nrow(df) > 0) {
+            df <- df %>%
+              mutate(assign_risk(first(model), value), .by = model)
+            last_value <- df %>%
+              filter(date == max(date)) %>%
+              mutate(risk_label = sprintf("%s: %s (%.0f%%)", name, risk, value * 100))
+            risk_date <- first(last_value$date)
+            risk_info <- paste(last_value$risk_label, collapse = ", ")
+            plt <- disease_plot(df, xrange = c(dates$start, dates$end))
+
+            tagList(
+              plt,
               div(
                 style = "margin-top: 10px; font-style: italic;",
                 strong(paste0("For ", format(risk_date, "%b %d, %Y"), ":")),
                 risk_info
               )
+            )
+          } else {
+            div(
+              span(style = "color: orange;", icon("warning")),
+              em("This site does not have any weather data downloaded yet. Press 'Fetch weather' on the sidebar to download any missing data.")
+            )
+          }
+
+          div(
+            style = "border: 1px solid hsl(210, 40%, 80%); border-radius: 5px;",
+            div(
+              style = "background: hsl(210, 40%, 95%); padding: 5px 10px; font-size: large; font-weight: bold; border-radius: 5px;",
+              label,
+            ),
+            div(
+              style = "background: white; padding: 5px 10px; border-radius: 5px;",
+              content,
             )
           )
         })

@@ -1282,11 +1282,7 @@ load_sites <- function(fpath) {
     drop_na()
   if (!(all(c("name", "lat", "lng") %in% names(df)))) stop("File did not contain [name] [lat] [lng] columns.")
   df <- df %>%
-    mutate(
-      name = sanitize_loc_names(name),
-      lat = round(lat, 2),
-      lng = round(lng, 2),
-    ) %>%
+    mutate(name = sanitize_loc_names(name)) %>%
     distinct(name, lat, lng) %>%
     filter(validate_ll(lat, lng))
   if (nrow(df) == 0) stop("No valid locations within service area.")
