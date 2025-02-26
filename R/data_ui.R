@@ -1,20 +1,34 @@
 
 dataUI <- function() {
   ns <- NS("data")
-  uiOutput(ns("main_ui"))
+  tagList(
+    div(
+      style = "margin-top: 10px; margin-bottom: 10px; font-style: italic;",
+      "Most values may be shown in either metric or imperial units. Press the (i) button above for more information."
+    ),
+    materialSwitch(
+      inputId = ns("metric"),
+      label = "Use metric",
+      value = TRUE,
+      status = "primary"
+    ),
+    radioGroupButtons(
+      inputId = ns("data_type"),
+      label = "Dataset",
+      choices = OPTS$data_type_choices
+    ),
+    uiOutput(ns("data_options")),
+    uiOutput(ns("dataset_ui")),
+  )
 }
 
-dataServer <- function(sites_df, selected_site, wx_data) {
+dataServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
   moduleServer(
     id = "data",
     function(input, output, session) {
       ns <- session$ns
 
-      rv <- reactiveValues(
-        # both must be true to show data display
-        sites_ready = FALSE,
-        weather_ready = FALSE,
-      )
+      # Reactive Values ----
 
       ## selected_data // reactive ----
       selected_data <- reactive({
@@ -59,8 +73,6 @@ dataServer <- function(sites_df, selected_site, wx_data) {
         if (input$metric) df else convert_measures(df)
       })
 
-
-
       ## download_data // reactive ----
       download_data <- reactive({
         selected_data() %>%
@@ -89,45 +101,13 @@ dataServer <- function(sites_df, selected_site, wx_data) {
         )
       })
 
-      ## control if the data view is ready ----
-      observe({
-        sr <- nrow(sites_df()) > 0
-        if (rv$sites_ready != sr) rv$sites_ready <- sr
-      })
 
-      observe({
-        wr <- nrow(wx_data()$hourly) > 0
-        if (rv$weather_ready != wr) rv$weather_ready <- wr
-      })
-
-      ## main_ui // renderUI ----
-      output$main_ui <- renderUI({
-        tagList(
-          div(
-            style = "margin-top: 10px; margin-bottom: 10px; font-style: italic;",
-            "Most values may be shown in either metric or imperial units. Press the (i) button above for more information."
-          ),
-          materialSwitch(
-            inputId = ns("metric"),
-            label = "Use metric",
-            value = TRUE,
-            status = "primary"
-          ),
-          radioGroupButtons(
-            inputId = ns("data_type"),
-            label = "Dataset",
-            choices = OPTS$data_type_choices
-          ),
-          uiOutput(ns("data_options")),
-          uiOutput(ns("dataset_ui")),
-        )
-      })
+      # Interface ----
 
       ## dataset_ui // renderUI ----
-      # TODO: this validation still gets locked out by the reactives
       output$dataset_ui <- renderUI({
-        validate(need(rv$sites_ready, "No sites selected, click on the map or load sites in the sidebar."))
-        validate(need(rv$weather_ready, "No weather data downloaded yet for the selected dates. Click 'Fetch Weather' to download."))
+        validate(need(sites_ready(), OPTS$validation_sites_ready))
+        validate(need(weather_ready(), OPTS$validation_weather_ready))
 
         tagList(
           uiOutput(ns("plot_ui")),
@@ -157,18 +137,14 @@ dataServer <- function(sites_df, selected_site, wx_data) {
         sites <- wx_data()$sites
         hourly <- wx_data()$hourly
         req(nrow(sites) > 0 && nrow(hourly) > 0 && any(sites$needs_download))
-        # echo(sites)
-        # status <- sites$needs_download
-        # echo(status)
-        # req(any(status))
         span(style = "color: red;", "Some sites are missing data based on your date selections, click 'Fetch weather' to load missing data.")
       })
 
       ## plot_ui // renderUI ----
       output$plot_ui <- renderUI({
         div(
-          uiOutput(ns("plot_sites_ui")),
           uiOutput(ns("plot_cols_ui")),
+          uiOutput(ns("plot_sites_ui")),
           uiOutput(ns("data_msg")),
           div(
             class = "plotly-container",
@@ -182,11 +158,12 @@ dataServer <- function(sites_df, selected_site, wx_data) {
         sites <- wx_data()$sites
         req(nrow(sites) > 1)
         choices <- set_names(sites$id, sprintf("%s: %s", sites$id, str_trunc(sites$name, 15)))
+        selected <- first_truthy(intersect(input$plot_sites, choices), selected_site())
         checkboxGroupInput(
           inputId = ns("plot_sites"),
           label = "Sites to display",
           choices = choices,
-          selected = selected_site(),
+          selected = selected,
           inline = TRUE
         )
       })
@@ -204,6 +181,7 @@ dataServer <- function(sites_df, selected_site, wx_data) {
         prev_selection <- intersect(cols, isolate(input$plot_cols))
         default_selection <- intersect(cols, OPTS$plot_default_cols)
         div(
+          tags$label("Data to display"),
           div(
             class = "flex-across",
             div(
@@ -319,7 +297,10 @@ dataServer <- function(sites_df, selected_site, wx_data) {
             hovermode = "x",
             showlegend = TRUE,
             margin = list(t = 50, r = 50),
-            legend = list(orientation = "h"),
+            legend = list(
+              orientation = "h",
+              font = OPTS$plot_legend_font
+            ),
             xaxis = list(
               range = opts$date_range
             ),
@@ -366,9 +347,10 @@ dataServer <- function(sites_df, selected_site, wx_data) {
           if (opts$multi_site) {
             for (id in opts$selected_ids) {
               site_df <- df %>% filter(site_id == id)
+              name <- str_trunc(first(site_df$site_name), 15)
               plt <- add_trace_to_plot(
                 plt, x = site_df$date, y = site_df[[col]],
-                name = sprintf("Site %s: %s", id, col_name)
+                name = sprintf("%s: %s - %s", id, name, col_name)
               )
             }
           } else {

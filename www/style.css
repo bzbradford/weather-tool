@@ -2,12 +2,12 @@
 /*--- UW STYLE ---*/
 
 @font-face {
-  font-family: 'RedhatDisplay';
+  font-family: 'Red Hat Display';
   src: url('fonts/redhat-display-latin.v14.woff2') format('woff2');
 }
 
 @font-face {
-  font-family: 'RedhatText';
+  font-family: 'Red Hat Text';
   src: url('fonts/redhat-text-latin.v13.woff2') format('woff2');
 }
 
@@ -23,11 +23,11 @@ table, caption, tbody, tfoot, thead, tr, th, td {
 }
 
 html, body, header {
-  font-family: 'RedhatDisplay';
+  font-family: 'Red Hat Display';
 }
 
 h1, h2, h3, h4, h5, h6 {
-  font-family: 'RedhatText';
+  font-family: 'Red Hat Text';
 }
 
 
@@ -151,6 +151,12 @@ header {
   }
 }
 
+.inline-flex {
+  display: inline-flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
 .flex-down {
   display: flex;
   flex-direction: column;
@@ -162,13 +168,13 @@ header {
   display: flex;
   flex-direction: row;
   flex-wrap: wrap;
-/*  justify-content: space-between;*/
   gap: 10px;
 }
 
 .flex-across > .btn {
   flex: 1;
 }
+
 
 
 /*--- STYLES ---*/

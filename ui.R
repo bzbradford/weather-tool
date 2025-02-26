@@ -25,13 +25,10 @@ ui <- fluidPage(
     div(class = "column sidebar-container",
       h2("Site selection"),
       div(
-        # div(
-        #   style = "margin-top: 10px;",
-        #   materialSwitch("multi_site", "Multi site mode")
-        # ),
         div(
-          uiOutput("site_ui"),
-          uiOutput("multi_site_ui"),
+          uiOutput("site_help_ui"),
+          DTOutput("sites_tbl"),
+          uiOutput("site_btns")
         ),
         div(
           style = "margin-top: 20px;",
@@ -54,7 +51,8 @@ ui <- fluidPage(
     div(class = "column data-container",
       tabsetPanel(
         tabPanel("View data", dataUI()),
-        tabPanel("Disease risk", riskUI())
+        tabPanel("Disease risk", riskUI()),
+        selected = "Disease risk"
       )
     )
   ),

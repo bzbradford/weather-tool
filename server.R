@@ -53,7 +53,22 @@ server <- function(input, output, session) {
 
     start_date = NULL,
     end_date = NULL,
+
+    # for controlling messages on modules
+    sites_ready = FALSE,
+    weather_ready = FALSE,
   )
+
+  ## control if the data view is ready ----
+  observe({
+    sr <- nrow(rv$sites) > 0
+    if (rv$sites_ready != sr) rv$sites_ready <- sr
+  })
+
+  observe({
+    wr <- nrow(wx_data()$hourly) > 0
+    if (rv$weather_ready != wr) rv$weather_ready <- wr
+  })
 
   ## selected_dates ----
   observe({
@@ -235,15 +250,6 @@ server <- function(input, output, session) {
   # Sidebar UI ----
 
   ## Sites table ----
-
-  ### site_ui // renderUI ----
-  output$site_ui <- renderUI({
-    tagList(
-      uiOutput("site_help_ui"),
-      DTOutput("sites_tbl"),
-      uiOutput("site_btns")
-    )
-  })
 
   output$site_help_ui <- renderUI({
     sites <- rv$sites
@@ -543,6 +549,7 @@ server <- function(input, output, session) {
   ### action_ui // renderUI ----
   output$action_ui <- renderUI({
     btn <- function(msg, ...) actionButton("fetch", msg, ...)
+    rv$action_nonce
     sites <- rv$sites
 
     opts <- lst(
@@ -594,7 +601,7 @@ server <- function(input, output, session) {
         }
       }
     )
-
+    rv$action_nonce <- runif(1)
     rv$weather <- saved_weather
   })
 
@@ -926,9 +933,20 @@ server <- function(input, output, session) {
   # Data tab ----
 
   dataServer(
-    sites_df = reactive(rv$sites),
+    wx_data = reactive(wx_data()),
     selected_site = reactive(rv$selected_site),
-    wx_data = reactive(wx_data())
+    sites_ready = reactive(rv$sites_ready),
+    weather_ready = reactive(rv$weather_ready)
+  )
+
+
+  # Disease models tab ----
+
+  riskServer(
+    wx_data = reactive(wx_data()),
+    selected_site = reactive(rv$selected_site),
+    sites_ready = reactive(rv$sites_ready),
+    weather_ready = reactive(rv$weather_ready)
   )
 
 }
