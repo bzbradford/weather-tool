@@ -14,6 +14,7 @@ suppressPackageStartupMessages({
   library(fst) # file storage
   library(httr2) # requests
   library(markdown)
+  library(zoo) # rollmean
 
   library(shiny)
   library(shinythemes)
@@ -126,6 +127,20 @@ OPTS <- lst(
     "Beet" = "beet"
   ),
 
+  # risk_model_attr = tribble(
+  #   ~name, ~label, ~risk_fn,
+  #   white_mold_dry_prob,
+  #   white_mold_irrig_30_prob,
+  #   white_mold_irrig_15_prob,
+  #   gray_leaf_spot_prob,
+  #   tarspot_prob,
+  #   frogeye_leaf_spot_prob,
+  #   potato_pdays_cumulative,
+  #   late_blight_dsv_cumulative,
+  #   alternaria_dsv_cumulative,
+  #   cercospora_div_cumulative
+  # ),
+
   risk_info = list(
     corn = "Corn diseases include white mold, tarspot, and gray leaf spot. Changing the irrigation and row spacing options will affect the white mold model output. Disease risk is represented as a probability of spore presence, and an associated risk assessment is provided. Risk assessment is only applicable when corn is in the growth stages V10 - R3. Risk is mitigated by having applied a protective fungicide in the last 14 days.",
     soy = "Soybean diseases include white mold and frogeye leaf spot. Disease risk is represented as a probability of spore presence, and an associated risk assessment is provided. Risk assessment is only applicable when soybean is in the growth stages R1-R5. Risk is mitigated by having applied a protective fungicide in the last 14 days.",
@@ -172,6 +187,11 @@ OPTS <- lst(
 echo <- function(x) {
   message(deparse(substitute(x)), " <", paste(class(x), collapse = ", "), ">")
   print(x)
+}
+
+runtime <- function(label = "", ref = now()) {
+  message(">> ", label, " [", now(), "]")
+  message(difftime(now(), ref), " since last timestamp")
 }
 
 # swaps names and values in a list or vector
@@ -452,9 +472,12 @@ fetch_weather <- function(sites, start_date, end_date) {
       dates_need
     }
 
+    #TODO: build ibm chunks and strike any that aren't needed?
+    # or send list of dates to get_ibm and have it pick chunks...?
+
     # get weather if needed
     if (length(dates) > 0) {
-      resp <- get_ibm(site$lat, site$lng, first(dates) - 1, last(dates) + 1)
+      resp <- get_ibm(site$lat, site$lng, first(dates), last(dates))
       incProgress(1)
       if (nrow(resp) == 0) {
         status <- sprintf("Unable to get some/all weather for %.2f, %.2f from %s to %s.", site$lat, site$lng, first(dates), last(dates))
@@ -569,11 +592,11 @@ rename_with_units <- function(df, unit_system = c("metric", "imperial")) {
 # Logistic function to convert logit to probability
 logistic <- function(logit) exp(logit) / (1 + exp(logit))
 
-
 ## Any crop ----
 
 #' White mold, dryland model - Any crop
-#' Risk criteria ?
+#' Growth stage: Corn V10-R3, Soy R1-R3
+#' Risk criteria: High >=40%, Med >=20%, Low >=5%
 #' No risk: Fungicide app in last 14 days, min temp <32F
 #' @param MaxAT_30ma 30-day moving average of daily maximum temperature, Celsius
 #' @param MaxWS_30ma 30-day moving average of daily maximum wind speed, m/s
@@ -592,7 +615,7 @@ predict_whitemold_dry <- function(MaxAT_30ma, MaxWS_30ma) {
 
 
 #' White mold, irrigated model - Any crop
-#' Risk criteria ?
+#' Risk criteria: High >=40%, Med >=20%, Low >=5%
 #' No risk: Fungicide app in last 14 days, min temp <32F
 #' @param MaxAT_30MA Maximum daily temperature, 30-day moving average, Celsius
 #' @param MaxRH_30ma Maximum daily relative humidity, 30-day moving average, 0-100%
@@ -814,6 +837,184 @@ calc_cercospora_div <- function(temp, h) {
 
 
 
+# Disease severity --------------------------------------------------------
+
+assign_risk <- function(model, value) {
+  switch(model,
+    "white_mold_dry_prob"      = risk_for_fieldcrops(value, 40, 20, 5),
+    "white_mold_irrig_30_prob" = risk_for_fieldcrops(value, 40, 20, 5),
+    "white_mold_irrig_15_prob" = risk_for_fieldcrops(value, 40, 20, 5),
+    "gray_leaf_spot_prob"      = risk_for_fieldcrops(value, 60, 40, 1),
+    "tarspot_prob"             = risk_for_fieldcrops(value, 35, 20, 1),
+    "frogeye_leaf_spot_prob"   = risk_for_fieldcrops(value, 50, 40, 1),
+    "potato_pdays"             = risk_for_earlyblight(value),
+    "late_blight_dsv"          = risk_for_lateblight(value),
+    "alternaria_dsv"           = risk_for_alternaria(value),
+    "cercospora_div"           = risk_for_cercospora(value)
+  )
+}
+
+
+## Field crops ----
+
+# for field crops models
+risk_from_prob <- function(prob, high, med, low) {
+  cut(
+    prob * 100,
+    breaks = c(0, low, med, high, 100),
+    labels = c("Very low", "Low", "Medium", "High"),
+    include.lowest = TRUE,
+    right = FALSE
+  )
+}
+
+# tibble(
+#   value = runif(10),
+#   risk = risk_from_prob(value, 60, 40, 5)
+# )
+
+
+risk_for_fieldcrops <- function(value, high, med, low) {
+  tibble(
+    value_label = sprintf("%.0f%%", value * 100),
+    risk = risk_from_prob(value, high, med, low)
+  )
+}
+
+# tibble(
+#   value = runif(10),
+#   risk_for_fieldcrops(value, 40, 20, 5)
+# )
+
+
+
+## Vegetables ----
+
+risk_from_severity <- function(severity) {
+  cut(
+    severity,
+    breaks = 0:5,
+    labels = c("Very low", "Low", "Medium", "High", "Very high"),
+    include.lowest = TRUE,
+    right = FALSE
+  )
+}
+
+# tibble(
+#   value = round(runif(10, 0, 4)),
+#   risk = risk_from_severity(value)
+# )
+
+
+risk_for_earlyblight <- function(value) {
+  tibble(
+    total = cumsum(value),
+    avg7 = rollapplyr(value, 7, mean, partial = TRUE),
+    value_label = sprintf("Daily: %.0f, 7-day avg: %.1f, Total: %.0f", value, total, avg7),
+    severity = case_when(
+      total >= 300 ~
+        (avg7 >= 1) +
+        (avg7 >= 3) +
+        (avg7 >= 5) +
+        (avg7 >= 8),
+      TRUE ~
+        (total >= 150) +
+        (total >= 200) +
+        (total >= 250)
+    ),
+    risk = risk_from_severity(severity)
+  )
+}
+
+# tibble(
+#   value = runif(100, 5, 10),
+#   risk_for_earlyblight(value),
+# ) %>%
+#   mutate(day = row_number()) %>%
+#   ggplot(aes(x = day, color = risk, group = 1)) +
+#   geom_line(aes(y = total)) +
+#   scale_color_brewer(palette = "Spectral", direction = -1)
+
+
+risk_for_lateblight <- function(value) {
+  tibble(
+    total = cumsum(value),
+    total14 = rollapplyr(value, 14, sum, partial = TRUE),
+    value_label = sprintf("Daily: %.0f, 14-day: %.0f, Total: %.0f", value, total14, total),
+    severity = case_when(
+      total14 >= 21 & total >= 30 ~ 4,
+      total14 >= 14 & total >= 30 ~ 3,
+      total14 >= 3 | total >= 30 ~ 2,
+      total14 >= 1 ~ 1,
+      TRUE ~ 0
+    ),
+    risk = risk_from_severity(severity)
+  )
+}
+
+# tibble(
+#   value = runif(100, 0, 3) ,
+#   risk_for_lateblight(value)
+# ) %>%
+#   mutate(day = row_number()) %>%
+#   ggplot(aes(x = day, group = 1, color = risk)) +
+#   geom_line(aes(y = total14)) +
+#   geom_line(aes(y = total)) +
+#   scale_color_brewer(palette = "Spectral", direction = -1)
+
+
+risk_for_alternaria <- function(value) {
+  tibble(
+    total7 = rollapplyr(value, 7, sum, partial = TRUE),
+    value_label = sprintf("Daily: %.0f, 7-day: %.0f", value, total7),
+    severity =
+      (total7 >= 5) +
+      (total7 >= 10) +
+      (total7 >= 15) +
+      (total7 >= 20),
+    risk = risk_from_severity(severity)
+  )
+}
+
+# tibble(
+#   value = runif(100, 0, 5),
+#   risk_for_alternaria(value)
+# ) %>%
+#   mutate(day = row_number()) %>%
+#   ggplot(aes(x = day, color = risk, group = 1)) +
+#   geom_line(aes(y = total7)) +
+#   scale_color_brewer(palette = "Spectral", direction = -1)
+
+
+risk_for_cercospora <- function(value) {
+  tibble(
+    avg2 = rollapplyr(value, 2, mean, partial = TRUE),
+    avg7 = rollapplyr(value, 7, mean, partial = TRUE),
+    value_label = sprintf("Daily: %.0f, 2-day avg: %.0f, 7-day avg: %.0f", value, avg2, avg7),
+    severity = case_when(
+      avg7 >= 5 | avg2 >= 5.5 ~ 4,
+      avg7 >= 3 | avg2 >= 3.5 ~ 3,
+      avg7 >= 1.5 | avg2 >= 2 ~ 2,
+      avg7 >= .5 | avg2 >= 1 ~ 1,
+      TRUE ~ 0
+    ),
+    risk = risk_from_severity(severity)
+  )
+}
+
+# tibble(
+#   value = runif(100, 0, 4),
+#   risk_for_cercospora(value)
+# ) %>%
+#   mutate(day = row_number()) %>%
+#   ggplot(aes(x = day, color = risk, group = 1)) +
+#   geom_line(aes(y = avg2)) +
+#   geom_line(aes(y = avg7)) +
+#   scale_color_brewer(palette = "Spectral", direction = -1)
+
+
+
+
 # Growing degree days ----------------------------------------------------------
 
 #' Single sine method
@@ -948,7 +1149,7 @@ build_ma_from_daily <- function(daily, align = c("center", "right")) {
   attr <- daily %>% select(grid_id, any_of(OPTS$date_attr_cols))
 
   # define moving average functions
-  roll_mean <- function(vec, width) zoo::rollapply(vec, width, \(x) mean(x, na.rm = T), fill = NA, partial = T, align = align)
+  roll_mean <- function(vec, width) rollapply(vec, width, \(x) mean(x, na.rm = T), fill = NA, partial = T, align = align)
   fns <- c(
     "7day" = ~roll_mean(.x, 7),
     "14day" = ~roll_mean(.x, 14),
@@ -1190,7 +1391,7 @@ generate_sample_data <- function(n_series = 5) {
 
 
 # data should have cols: date, name, value, risk
-disease_plot <- function(data, height = 100, xrange = NULL, yrange = NULL, yformat = NULL) {
+disease_plot <- function(data, height = 100, xrange = NULL) {
 
   yaxis <- xaxis <- list(
     title = "",
@@ -1201,7 +1402,7 @@ disease_plot <- function(data, height = 100, xrange = NULL, yrange = NULL, yform
     fixedrange = TRUE
   )
   xaxis$range <- xrange
-  yaxis$range <- yrange
+  yaxis$range <- c(-.05, max(1, max(data$value)) * 1.05)
   xaxis$showticklabels <- TRUE
 
   plot_ly(
@@ -1209,11 +1410,14 @@ disease_plot <- function(data, height = 100, xrange = NULL, yrange = NULL, yform
     x = ~date,
     y = ~value,
     name = ~name,
+    text = ~paste0(value_label, " (", risk, ")"),
     type = 'scatter',
     mode = 'lines',
-    line = list(color = ~risk, width = 2),
+    line = list(width = 2),
     # hoverinfo = 'x+y',
-    hovertemplate = yformat,
+    # hovertemplate = yformat,
+    # hovertemplate = "%{y:.0%} (%{text})",
+    hovertemplate = "%{text}",
     height = height
   ) %>%
     layout(
@@ -1232,14 +1436,6 @@ disease_plot <- function(data, height = 100, xrange = NULL, yrange = NULL, yform
     config(displayModeBar = FALSE)
 }
 
-generate_sample_data(3) %>%
-  mutate(risk = case_when(
-    value >= .6 ~ "High",
-    value >= .4 ~ "Medium",
-    value > 0 ~ "Low",
-    TRUE ~ "No risk"
-  )) %>%
-  disease_plot(yrange = c(0, 1), yformat = ".1%")
 
 
 # Startup ----------------------------------------------------------------------

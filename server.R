@@ -157,6 +157,9 @@ server <- function(input, output, session) {
   })
 
   wx_data <- reactive({
+    # print("wx_data")
+    # tstamp <- now()
+
     weather <- rv$weather
     sites <- sites_with_status()
     dates <- selected_dates()
@@ -170,18 +173,27 @@ server <- function(input, output, session) {
       filter(grid_id %in% sites$grid_id) %>%
       filter(between(date, dates$start, dates$end)) %>%
       build_hourly()
+    # runtime("hourly", tstamp)
 
     if (nrow(wx$hourly) == 0) return(wx)
-
     wx$daily <- build_daily(wx$hourly)
+    # runtime("daily", tstamp)
+
+    # TODO: these are slow!
     wx$ma_center <- build_ma_from_daily(wx$daily, "center")
+    # runtime("ma_center", tstamp)
     wx$ma_right <- build_ma_from_daily(wx$daily, "right")
+    # runtime("ma_right", tstamp)
+
     wx$disease <- left_join(
       build_disease_from_daily(wx$daily),
       build_disease_from_ma(wx$ma_right),
       join_by(grid_id, date)
     )
+    # runtime("disease", tstamp)
+
     wx$gdd <- build_gdd_from_daily(wx$daily)
+    # runtime("gdd", tstamp)
 
     wx
   }) %>% bindCache(wx_hash())

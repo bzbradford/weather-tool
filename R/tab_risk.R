@@ -128,14 +128,14 @@ riskServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
             "Frogeye leaf spot" = "frogeye_leaf_spot_prob"
           ),
           if (crop == "potato") c(
-            "Early blight (P-days)" = "potato_pdays_cumulative",
-            "Late blight (DSV)" = "late_blight_dsv_cumulative"
+            "Early blight (P-days)" = "potato_pdays",
+            "Late blight (DSV)" = "late_blight_dsv"
           ),
           if (crop == "carrot") c(
-            "Alternaria (DSV)" = "alternaria_dsv_cumulative"
+            "Alternaria (DSV)" = "alternaria_dsv"
           ),
           if (crop == "beet") c(
-            "Cercospora (DIV)" = "cercospora_div_cumulative"
+            "Cercospora (DIV)" = "cercospora_div"
           )
         )
       })
@@ -153,23 +153,22 @@ riskServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
         }
         disease_data <- wx$disease %>%
           select(grid_id, date, all_of(models)) %>%
-          pivot_longer(cols = -c(grid_id, date))
+          pivot_longer(cols = -c(grid_id, date)) %>%
+          left_join(
+            enframe(models, value = "model"),
+            join_by(name)
+          )
+        # echo(disease_data)
         site_data <- sites %>%
           st_drop_geometry() %>%
           select(site_label, grid_id) %>%
           left_join(disease_data, join_by(grid_id)) %>%
-          mutate(risk = case_when(
-            value >= .6 ~ "High risk",
-            value >= .4 ~ "Medium risk",
-            value > 0.01 ~ "Low risk",
-            TRUE ~ "No risk"
-          ))
+          mutate(name = fct_inorder(name)) %>%
+          mutate(assign_risk(first(model), value), .by = c(site_label, model))
         site_labels <- unique(sites$site_label)
 
         elems <- lapply(site_labels, function(label) {
-          df <- site_data %>%
-            filter(site_label == label) %>%
-            mutate(name = fct_inorder(name))
+          df <- site_data %>% filter(site_label == !!label)
           last_value <- df %>%
             filter(date == max(date)) %>%
             mutate(risk_label = sprintf("%s: %s (%.0f%%)", name, risk, value * 100))
@@ -186,9 +185,7 @@ riskServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
               style = "background: white; padding: 5px 10px; border-radius: 5px;",
               disease_plot(
                 data = df,
-                xrange = c(dates$start, dates$end),
-                yrange = c(-.05, 1.05),
-                yformat = "%{y:.0%}"
+                xrange = c(dates$start, dates$end)
               ),
               div(
                 style = "margin-top: 10px; font-style: italic;",
