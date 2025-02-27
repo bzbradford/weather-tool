@@ -70,6 +70,8 @@ server <- function(input, output, session) {
     if (rv$weather_ready != wr) rv$weather_ready <- wr
   })
 
+  # observe(echo(rv$weather_ready))
+
   ## selected_dates ----
   observe({
     start <- req(input$start_date)
@@ -163,6 +165,7 @@ server <- function(input, output, session) {
     weather <- rv$weather
     sites <- sites_with_status()
     dates <- selected_dates()
+
     req(nrow(weather) > 0)
     req(nrow(sites) > 0)
 
@@ -176,6 +179,7 @@ server <- function(input, output, session) {
     # runtime("hourly", tstamp)
 
     if (nrow(wx$hourly) == 0) return(wx)
+
     wx$daily <- build_daily(wx$hourly)
     # runtime("daily", tstamp)
 
@@ -197,6 +201,7 @@ server <- function(input, output, session) {
 
     wx
   }) %>% bindCache(wx_hash())
+
 
 
   ## Cookie handling ----
@@ -667,7 +672,7 @@ server <- function(input, output, session) {
       add_basemaps() %>%
       fit_bounds(OPTS$map_bounds_wi) %>%
       addMapPane("extent", 400) %>%
-      addMapPane("counties", 410) %>%
+      # addMapPane("counties", 410) %>%
       addMapPane("grid", 420) %>%
       addMapPane("sites", 430) %>%
       addLayersControl(

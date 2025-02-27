@@ -15,7 +15,9 @@ dataUI <- function() {
     radioGroupButtons(
       inputId = ns("data_type"),
       label = "Dataset",
-      choices = OPTS$data_type_choices
+      choices = OPTS$data_type_choices,
+      individual = TRUE,
+      size = "sm"
     ),
     uiOutput(ns("data_options")),
     uiOutput(ns("dataset_ui")),

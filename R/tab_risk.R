@@ -81,21 +81,11 @@ riskServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
               inline = TRUE
             )
           ),
-          uiOutput(ns("show_all_sites"))
+          uiOutput(ns("show_all_sites_ui"))
         )
       })
 
-      # output$selected_site_ui <- renderUI({
-      #   sites <- wx_data()$sites
-      #   req(nrow(sites) > 1)
-      #   materialSwitch(
-      #     inputId = ns("selected_site_only"),
-      #     label = "Only show selected site",
-      #     value = input$selected_site_only %||% FALSE
-      #   )
-      # })
-
-      output$show_all_sites <- renderUI({
+      output$show_all_sites_ui <- renderUI({
         sites <- wx_data()$sites
         req(nrow(sites) > 1)
         radioButtons(

@@ -382,36 +382,6 @@ build_grids <- function(wx) {
 
 # saved_weather %>% build_grids()
 
-# weather_status <- function(wx, start_date = min(wx$date), end_date = max(wx$date)) {
-#   dates_expected <- seq.Date(start_date, end_date, 1)
-#   wx <- wx %>% filter(date %in% dates_expected)
-#   if (nrow(wx) == 0) return(FALSE)
-#   wx %>%
-#     summarize(
-#       date_min = min(date),
-#       date_max = max(date),
-#       days_expected = length(dates_expected),
-#       days_actual = n_distinct(date),
-#       days_missing = days_expected - days_actual,
-#       days_missing_pct = days_missing / days_expected,
-#       time_min_expected = ymd_hms(paste(start_date, "00:20:00"), tz = first(time_zone)),
-#       time_min_actual = min(datetime_local),
-#       time_max_expected = min(
-#         now(tzone = first(time_zone)),
-#         ymd_hms(paste(end_date, "23:20:00"), tz = first(time_zone))
-#       ),
-#       time_max_actual = max(datetime_local),
-#       hours_expected = as.integer(difftime(time_max_expected, time_min_expected, units = "hours")),
-#       hours_actual = n(),
-#       hours_missing = hours_expected - hours_actual,
-#       hours_missing_pct = hours_missing / hours_expected,
-#       hours_stale = as.integer(difftime(now(tzone = first(time_zone)), time_max_actual, units = "hours")),
-#       stale = hours_stale > OPTS$ibm_stale_hours,
-#       needs_download = stale | days_missing > 0,
-#       .by = grid_id
-#     )
-# }
-
 weather_status <- function(wx, start_date = min(wx$date), end_date = max(wx$date)) {
   dates_expected <- seq.Date(start_date, end_date, 1)
   wx <- filter(wx, between(date, start_date, end_date))
@@ -1083,12 +1053,23 @@ build_hourly <- function(ibm_hourly) {
       night = !between(hour, 7, 19), # night is between 20:00 and 6:00
       date_since_night = as_date(datetime_local + hours(4)),
       .after = date,
+      .by = grid_id
     ) %>%
-    arrange(grid_lat, grid_lng, datetime_utc) %>%
+    arrange(grid_lat, grid_lng, datetime_local) %>%
     mutate(precip_cumulative = cumsum(precip), .after = precip) %>%
     mutate(snow_cumulative = cumsum(snow), .after = snow) %>%
     mutate(dew_point_depression = abs(temperature - dew_point), .after = dew_point)
 }
+
+(saved_weather %>%
+  build_hourly() %>%
+  slice(1) %>%
+  pull(datetime_local) + hours(4)) %>%
+  as_date(tz = "America/Chicago") %>%
+  tz()
+
+
+
 
 #' Generate daily summary data from hourly weather
 #' @param hourly accepts the cleaned hourly data from `build_hourly()`
@@ -1109,13 +1090,10 @@ build_daily <- function(hourly) {
       across(c(wind_direction), summary_fns),
       hours_rh_over_80 = sum(relative_humidity >= 80),
       hours_rh_over_90 = sum(relative_humidity >= 90),
-      hours_missing = 24 - n(),
       .by = c(grid_id, date, yday, year, month, day)
     ) %>%
     mutate(precip_cumulative = cumsum(precip_daily), .after = precip_max_hourly, .by = grid_id ) %>%
-    mutate(snow_cumulative = cumsum(snow_daily), .after = snow_max_hourly, .by = grid_id) %>%
-    filter(hours_missing < 6) %>%
-    select(-hours_missing)
+    mutate(snow_cumulative = cumsum(snow_daily), .after = snow_max_hourly, .by = grid_id)
 
   # summarized by "date since night" eg since 8 pm the day before through 7 pm
   by_night <- hourly %>%
@@ -1322,70 +1300,6 @@ site_action_link <- function(action = c("edit", "save", "trash"), site_id, site_
 # site_action_link("edit", 1, "foo")
 
 
-generate_sample_data <- function(n_series = 5) {
-  result <- list()
-
-  for (i in 1:n_series) {
-    # Create random time series data
-    # set.seed(i * 123)  # For reproducibility, but different for each series
-    days <- 30
-    dates <- seq(Sys.Date() - days, Sys.Date(), by = "day")
-
-    # Generate values with some trend and randomness
-    # values <- cumsum(rnorm(length(dates), mean = 0.1, sd = 0.5))
-    values <- cumsum(runif(length(dates)))
-    values <- values / max(values)
-
-    # Create a data frame
-    series_name <- paste("Series", i)
-    result[[i]] <- data.frame(
-      name = series_name,
-      date = dates,
-      value = values,
-      # Add some metadata for the cards
-      title = paste("Metric", i),
-      description = paste("Description for metric", i)
-    )
-  }
-
-  do.call(rbind, result)
-}
-
-# disease_plot <- function(data, height = 150, yrange = NULL) {
-#
-#   axis_config <- list(
-#     title = "",
-#     showticklabels = FALSE,
-#     showgrid = FALSE,
-#     showline = FALSE,
-#     zeroline = FALSE,
-#     fixedrange = TRUE
-#   )
-#
-#   plot_ly(
-#     data,
-#     x = ~date,
-#     y = ~value,
-#     name = ~series,
-#     type = 'scatter',
-#     mode = 'lines',
-#     line = list(color = ~risk, width = 2),
-#     hoverinfo = 'x+y',
-#     height = height
-#   ) %>%
-#     layout(
-#       margin = list(l = 0, r = 0, b = 0, t = 0, pad = 4),
-#       paper_bgcolor = 'rgba(0,0,0,0)',
-#       plot_bgcolor = 'rgba(0,0,0,0)',
-#       xaxis = axis_config,
-#       yaxis = append(axis_config, list(range = yrange))
-#     ) %>%
-#     config(displayModeBar = FALSE)
-# }
-
-
-
-
 # data should have cols: date, name, value, risk
 disease_plot <- function(data, height = 100, xrange = NULL) {
 
@@ -1410,9 +1324,6 @@ disease_plot <- function(data, height = 100, xrange = NULL) {
     type = 'scatter',
     mode = 'lines',
     line = list(width = 2),
-    # hoverinfo = 'x+y',
-    # hovertemplate = yformat,
-    # hovertemplate = "%{y:.0%} (%{text})",
     hovertemplate = "%{text}",
     height = height
   ) %>%
