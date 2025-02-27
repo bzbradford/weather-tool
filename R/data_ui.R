@@ -24,13 +24,22 @@ dataUI <- function() {
   )
 }
 
-dataServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
+dataServer <- function(wx_data, selected_site, sites_ready) {
   moduleServer(
     id = "data",
     function(input, output, session) {
       ns <- session$ns
 
       # Reactive Values ----
+
+      rv <- reactiveValues(
+        weather_ready = FALSE
+      )
+
+      observe({
+        wr <- nrow(wx_data()$hourly) > 0
+        if (rv$weather_ready != wr) rv$weather_ready <- wr
+      })
 
       ## selected_data // reactive ----
       selected_data <- reactive({
@@ -109,7 +118,7 @@ dataServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
       ## dataset_ui // renderUI ----
       output$dataset_ui <- renderUI({
         validate(need(sites_ready(), OPTS$validation_sites_ready))
-        validate(need(weather_ready(), OPTS$validation_weather_ready))
+        validate(need(rv$weather_ready, OPTS$validation_weather_ready))
 
         tagList(
           uiOutput(ns("plot_ui")),
@@ -160,7 +169,8 @@ dataServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
         sites <- wx_data()$sites
         req(nrow(sites) > 1)
         choices <- set_names(sites$id, sprintf("%s: %s", sites$id, str_trunc(sites$name, 15)))
-        selected <- first_truthy(intersect(input$plot_sites, choices), selected_site())
+        # selected <- first_truthy(intersect(input$plot_sites, choices), selected_site())
+        selected <- selected_site()
         checkboxGroupInput(
           inputId = ns("plot_sites"),
           label = "Sites to display",

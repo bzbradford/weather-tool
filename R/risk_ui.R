@@ -3,18 +3,27 @@ riskUI <- function() {
   ns <- NS("risk")
   div(
     style = "margin-top: 10px;",
-    # p(em("Select a crop of interest below to see site-specific disease risk predictions.")),
+    p(OPTS$risk_info$general),
     uiOutput(ns("crop_ui")),
     uiOutput(ns("crop_info_ui")),
     uiOutput(ns("main_ui"))
   )
 }
 
-riskServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
+riskServer <- function(wx_data, selected_site, sites_ready) {
   moduleServer(
     id = "risk",
     function(input, output, session) {
       ns <- session$ns
+
+      rv <- reactiveValues(
+        weather_ready = FALSE
+      )
+
+      observe({
+        wr <- nrow(wx_data()$hourly) > 0
+        if (rv$weather_ready != wr) rv$weather_ready <- wr
+      })
 
       output$crop_ui <- renderUI({
         crop_choices <- OPTS$risk_crop_choices
@@ -41,7 +50,7 @@ riskServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
 
       output$main_ui <- renderUI({
         validate(need(sites_ready(), OPTS$validation_sites_ready))
-        validate(need(weather_ready(), OPTS$validation_weather_ready))
+        validate(need(rv$weather_ready, OPTS$validation_weather_ready))
 
         tagList(
           uiOutput(ns("opts_ui")),
@@ -118,14 +127,14 @@ riskServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
             "Frogeye leaf spot" = "frogeye_leaf_spot_prob"
           ),
           if (crop == "potato") c(
-            "Early blight (P-days)" = "potato_pdays",
-            "Late blight (DSV)" = "late_blight_dsv"
+            "Early blight" = "potato_pdays",
+            "Late blight" = "late_blight_dsv"
           ),
           if (crop == "carrot") c(
-            "Alternaria (DSV)" = "alternaria_dsv"
+            "Alternaria leaf blight" = "alternaria_dsv"
           ),
           if (crop == "beet") c(
-            "Cercospora (DIV)" = "cercospora_div"
+            "Cercospora leaf blight" = "cercospora_div"
           )
         )
       })
@@ -133,6 +142,8 @@ riskServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
       output$plots_ui <- renderUI({
         models <- selected_models()
         wx <- wx_data()
+        req(wx$disease)
+        req(nrow(wx$disease) > 0)
         dates <- wx$dates
         sites <- wx$sites %>%
           mutate(site_label = sprintf("Site %s: %s", id, name))
@@ -199,7 +210,7 @@ riskServer <- function(wx_data, selected_site, sites_ready, weather_ready) {
         })
 
         div(
-          style = "display: flex; flex-direction: column; gap: 10px; max-height: 100vh; overflow: auto;",
+          style = "display: flex; flex-direction: column; gap: 10px;",
           elems
         )
       })

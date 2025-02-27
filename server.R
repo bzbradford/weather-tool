@@ -65,11 +65,6 @@ server <- function(input, output, session) {
     if (rv$sites_ready != sr) rv$sites_ready <- sr
   })
 
-  observe({
-    wr <- nrow(wx_data()$hourly) > 0
-    if (rv$weather_ready != wr) rv$weather_ready <- wr
-  })
-
   # observe(echo(rv$weather_ready))
 
   ## selected_dates ----
@@ -279,10 +274,7 @@ server <- function(input, output, session) {
     } else {
       "Change the name of your pinned sites using the pen icon. Click on the map or use the search boxes to add another location."
     }
-    div(
-      style = "font-style:italic;",
-      text
-    )
+    p(text)
   })
 
   ### sites_tbl_data // reactive----
@@ -952,8 +944,7 @@ server <- function(input, output, session) {
   dataServer(
     wx_data = reactive(wx_data()),
     selected_site = reactive(rv$selected_site),
-    sites_ready = reactive(rv$sites_ready),
-    weather_ready = reactive(rv$weather_ready)
+    sites_ready = reactive(rv$sites_ready)
   )
 
 
@@ -962,8 +953,7 @@ server <- function(input, output, session) {
   riskServer(
     wx_data = reactive(wx_data()),
     selected_site = reactive(rv$selected_site),
-    sites_ready = reactive(rv$sites_ready),
-    weather_ready = reactive(rv$weather_ready)
+    sites_ready = reactive(rv$sites_ready)
   )
 
 }

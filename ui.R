@@ -36,7 +36,7 @@ ui <- fluidPage(
         ),
         div(
           style = "margin-top: 20px;",
-          uiOutput("action_ui"),
+          uiOutput("action_ui") %>% withSpinner(type = 8, size = .5, proxy.height = 50, caption = "Please wait..."),
           uiOutput("status_ui")
         )
       )
@@ -50,9 +50,8 @@ ui <- fluidPage(
     ),
     div(class = "column data-container",
       tabsetPanel(
-        tabPanel("View data", dataUI()),
-        tabPanel("Disease risk", riskUI()),
-        selected = "Disease risk"
+        tabPanel("Explore data", dataUI()),
+        tabPanel("Crop risk models", riskUI())
       )
     )
   ),

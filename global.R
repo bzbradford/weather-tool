@@ -23,6 +23,7 @@ suppressPackageStartupMessages({
   library(shinyjs)
   library(shinyalert)
   library(htmltools)
+  library(shinycssloaders)
 
   library(leaflet)
   library(leaflet.extras)
@@ -127,26 +128,13 @@ OPTS <- lst(
     "Beet" = "beet"
   ),
 
-  # risk_model_attr = tribble(
-  #   ~name, ~label, ~risk_fn,
-  #   white_mold_dry_prob,
-  #   white_mold_irrig_30_prob,
-  #   white_mold_irrig_15_prob,
-  #   gray_leaf_spot_prob,
-  #   tarspot_prob,
-  #   frogeye_leaf_spot_prob,
-  #   potato_pdays_cumulative,
-  #   late_blight_dsv_cumulative,
-  #   alternaria_dsv_cumulative,
-  #   cercospora_div_cumulative
-  # ),
-
   risk_info = list(
-    corn = "Corn diseases include white mold, tarspot, and gray leaf spot. Changing the irrigation and row spacing options will affect the white mold model output. Disease risk is represented as a probability of spore presence, and an associated risk assessment is provided. Risk assessment is only applicable when corn is in the growth stages V10 - R3. Risk is mitigated by having applied a protective fungicide in the last 14 days.",
-    soy = "Soybean diseases include white mold and frogeye leaf spot. Disease risk is represented as a probability of spore presence, and an associated risk assessment is provided. Risk assessment is only applicable when soybean is in the growth stages R1-R5. Risk is mitigated by having applied a protective fungicide in the last 14 days.",
-    potato = "Potato, tomato, eggplant, and other Solanaceous plants are susceptible to Early blight and Late blight.",
-    carrot = "Carrots are susceptible to the foliar disease Alternaria.",
-    beet = "Beets are susceptible to Cercospora."
+    general = "Field crops disease risk assessments are based on probability of spore presence, while algorithms for vegetable diseases vary. Risk model is only valid when the crop is present and in a vulnerable growth stage (if applicable). Risk may be mitigated in commercial production by application of a protective fungicide with the last 14 days. Set the start date to the approximate date of crop emergence for accurate risk assessments. Changing the irrigation and row spacing options below will affect the white mold model output.",
+    corn = "Corn diseases include white mold, tarspot, and gray leaf spot. Risk assessment is only applicable when corn is in the growth stages V10-R3.",
+    soy = "Soybean diseases include white mold and frogeye leaf spot. Soybean is vulnerable to white mold when in the growth stages R1-R3, and vulnerable to frogeye leaf spot when in R1-R5.",
+    potato = "Potato, tomato, eggplant, and other Solanaceous plants are susceptible to white mold, early blight and late blight. Early blight risk depends on the number of potato physiological days (P-days) accumulated since crop emergence, while late blight risk depends on the number of disease severity values generated in the last 14 days and since crop emergence.",
+    carrot = "Carrots are susceptible to the foliar disease Alternaria leaf blight. Alternaria risk depends on the number of disease severity values generated in the last 7 days.",
+    beet = "Beets are susceptible to Cercospora leaf blight. Cercospora risk depends on the average disease severity values in the past 2 days and 7 days."
   ),
 
   # add site_ before some columns in the sites table
@@ -631,7 +619,7 @@ predict_gls <- function(MinAT_21ma, MinDP_30ma) {
 
 
 #' Tarspot 'tarspotter' - Corn
-#' Use when growth stage V10 - R3
+#' Use when growth stage V10-R3
 #' Risk criteria: High >=35%, Medium >=20%, Low >0%
 #' No risk: Fungicide in last 14 days, temperature <32F
 #' @param MeanAT_30ma Mean daily temperature, 30-day moving average, Celsius
@@ -656,7 +644,7 @@ predict_tarspot <- function(MeanAT_30ma, MaxRH_30ma, HrsRH90Night_14ma) {
 ## Soy ----
 
 #' Frogeye leaf spot model - Soy
-#' Use when growth stage R1 - R5
+#' Use when growth stage R1-R5
 #' Risk criteria: High >=50%, Medium >=40%, Low >0%
 #' No risk: Fungicide in last 14 days, temperature <32F
 #' @param MaxAT_30ma Maximum daily temperature, 30-day moving average, Celsius
@@ -846,8 +834,8 @@ risk_from_prob <- function(prob, high, med, low) {
 
 risk_for_fieldcrops <- function(value, high, med, low) {
   tibble(
-    value_label = sprintf("%.0f%%", value * 100),
-    risk = risk_from_prob(value, high, med, low)
+    risk = risk_from_prob(value, high, med, low),
+    value_label = sprintf("%.0f%% (%s)", value * 100, risk)
   )
 }
 
@@ -880,7 +868,6 @@ risk_for_earlyblight <- function(value) {
   tibble(
     total = cumsum(value),
     avg7 = rollapplyr(value, 7, mean, partial = TRUE),
-    value_label = sprintf("Daily: %.0f, 7-day avg: %.1f, Total: %.0f", value, total, avg7),
     severity = case_when(
       total >= 300 ~
         (avg7 >= 1) +
@@ -892,7 +879,8 @@ risk_for_earlyblight <- function(value) {
         (total >= 200) +
         (total >= 250)
     ),
-    risk = risk_from_severity(severity)
+    risk = risk_from_severity(severity),
+    value_label = sprintf("%.1f P-days, 7-day avg: %.1f, Total: %.0f (%s risk)", value, avg7, total, risk)
   )
 }
 
@@ -908,9 +896,8 @@ risk_for_earlyblight <- function(value) {
 
 risk_for_lateblight <- function(value) {
   tibble(
-    total = cumsum(value),
     total14 = rollapplyr(value, 14, sum, partial = TRUE),
-    value_label = sprintf("Daily: %.0f, 14-day: %.0f, Total: %.0f", value, total14, total),
+    total = cumsum(value),
     severity = case_when(
       total14 >= 21 & total >= 30 ~ 4,
       total14 >= 14 & total >= 30 ~ 3,
@@ -918,7 +905,8 @@ risk_for_lateblight <- function(value) {
       total14 >= 1 ~ 1,
       TRUE ~ 0
     ),
-    risk = risk_from_severity(severity)
+    risk = risk_from_severity(severity),
+    value_label = sprintf("%s DSV, 14-day: %s, Total: %s (%s risk)", value, total14, total, risk)
   )
 }
 
@@ -936,13 +924,14 @@ risk_for_lateblight <- function(value) {
 risk_for_alternaria <- function(value) {
   tibble(
     total7 = rollapplyr(value, 7, sum, partial = TRUE),
-    value_label = sprintf("Daily: %.0f, 7-day: %.0f", value, total7),
+    total = cumsum(value),
     severity =
       (total7 >= 5) +
       (total7 >= 10) +
       (total7 >= 15) +
       (total7 >= 20),
-    risk = risk_from_severity(severity)
+    risk = risk_from_severity(severity),
+    value_label = sprintf("%s DSV, 7-day: %s, Total: %s (%s risk)", value, total7, total, risk)
   )
 }
 
@@ -960,7 +949,7 @@ risk_for_cercospora <- function(value) {
   tibble(
     avg2 = rollapplyr(value, 2, mean, partial = TRUE),
     avg7 = rollapplyr(value, 7, mean, partial = TRUE),
-    value_label = sprintf("Daily: %.0f, 2-day avg: %.0f, 7-day avg: %.0f", value, avg2, avg7),
+    total = cumsum(value),
     severity = case_when(
       avg7 >= 5 | avg2 >= 5.5 ~ 4,
       avg7 >= 3 | avg2 >= 3.5 ~ 3,
@@ -968,7 +957,8 @@ risk_for_cercospora <- function(value) {
       avg7 >= .5 | avg2 >= 1 ~ 1,
       TRUE ~ 0
     ),
-    risk = risk_from_severity(severity)
+    risk = risk_from_severity(severity),
+    value_label = sprintf("%s DIV, 2-day avg: %.1f, 7-day avg: %.1f, Total: %s (%s risk)", value, avg2, avg7, total, risk),
   )
 }
 
@@ -1060,16 +1050,6 @@ build_hourly <- function(ibm_hourly) {
     mutate(snow_cumulative = cumsum(snow), .after = snow) %>%
     mutate(dew_point_depression = abs(temperature - dew_point), .after = dew_point)
 }
-
-(saved_weather %>%
-  build_hourly() %>%
-  slice(1) %>%
-  pull(datetime_local) + hours(4)) %>%
-  as_date(tz = "America/Chicago") %>%
-  tz()
-
-
-
 
 #' Generate daily summary data from hourly weather
 #' @param hourly accepts the cleaned hourly data from `build_hourly()`
@@ -1300,10 +1280,16 @@ site_action_link <- function(action = c("edit", "save", "trash"), site_id, site_
 # site_action_link("edit", 1, "foo")
 
 
-# data should have cols: date, name, value, risk
-disease_plot <- function(data, height = 100, xrange = NULL) {
+# data should have cols: date, name, value, value_label, risk
+disease_plot <- function(data, xrange = NULL) {
 
-  yaxis <- xaxis <- list(
+  # expand the range by amt %
+  yrange <- function(lo, hi, amt = .05) {
+    c(lo - abs(hi - lo) * amt, hi + abs(hi - lo) * amt)
+  }
+
+  # axis config
+  x <- y1 <- y2 <- list(
     title = "",
     showticklabels = FALSE,
     showgrid = FALSE,
@@ -1311,28 +1297,31 @@ disease_plot <- function(data, height = 100, xrange = NULL) {
     zeroline = FALSE,
     fixedrange = TRUE
   )
-  xaxis$range <- xrange
-  yaxis$range <- c(-.05, max(1, max(data$value)) * 1.05)
-  xaxis$showticklabels <- TRUE
+  x$showticklabels <- TRUE
+  x$range <- xrange
+  y1$range <- yrange(0, 1)
+  y2$range <- yrange(0, 4)
+  y2$overlaying <- "y"
 
-  plot_ly(
-    data,
-    x = ~date,
-    y = ~value,
-    name = ~name,
-    text = ~paste0(value_label, " (", risk, ")"),
-    type = 'scatter',
-    mode = 'lines',
-    line = list(width = 2),
-    hovertemplate = "%{text}",
-    height = height
-  ) %>%
+  if (!("severity" %in% names(data))) data$severity <- NA
+  data <- data %>%
+    mutate(
+      yaxis = case_when(
+        grepl("_prob", model) ~ "y1",
+        !is.na(severity) ~ "y2"
+      ),
+      value = coalesce(severity, value)
+    )
+
+  plt <-
+    plot_ly(height = 100) %>%
     layout(
       margin = list(l = 0, r = 0, b = 0, t = 0, pad = 5),
       paper_bgcolor = 'rgba(0,0,0,0)',
       plot_bgcolor = 'rgba(0,0,0,0)',
-      xaxis = xaxis,
-      yaxis = yaxis,
+      xaxis = x,
+      yaxis = y1,
+      yaxis2 = y2,
       hovermode = "x unified",
       legend = list(
         height = 100,
@@ -1341,6 +1330,25 @@ disease_plot <- function(data, height = 100, xrange = NULL) {
       )
     ) %>%
     config(displayModeBar = FALSE)
+
+  for (model in unique(data$model)) {
+    df <- filter(data, model == !!model)
+    yaxis <- first(df$yaxis)
+    plt <- plt %>% add_trace(
+      data = df,
+      x = ~date,
+      y = ~value,
+      name = ~name,
+      text = ~value_label,
+      type = 'scatter',
+      mode = 'lines',
+      line = list(width = 2),
+      hovertemplate = "%{text}",
+      yaxis = yaxis
+    )
+  }
+
+  plt
 }
 
 
